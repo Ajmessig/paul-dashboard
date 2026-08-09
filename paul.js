@@ -203,11 +203,15 @@ let positions = [
 { name: "Stadtwerke Lindau",      number: "RE-2026-121", amount: 4900, type: "receivable", dueDate: "2026-07-17" },
 { name: "Familie Demir",          number: "RE-2026-119", amount: 2340, type: "receivable", dueDate: "2026-07-24" },
 { name: "Café Morgentau",         number: "RE-2026-098", amount: 1800, type: "receivable", dueDate: "2026-07-03" },
-{ name: "Sonepar Deutschland",    number: "Material",    amount: 4560, type: "payable",    dueDate: "2026-07-12" },
-{ name: "Finanzamt Lindau",       number: "USt-Voranmeldung", amount: 3220, type: "payable", dueDate: "2026-07-15" },
-{ name: "Würth",                  number: "Material",    amount: 1640, type: "payable",    dueDate: "2026-07-20" },
-{ name: "Leasing Sparkasse",      number: "Transporter", amount: 550,  type: "payable",    dueDate: "2026-07-08" },
-{ name: "Allianz",                number: "Betriebshaftpflicht", amount: 1310, type: "payable", dueDate: "2026-07-27" }
+// kategorie steuert, wie die Prognose den Posten verrechnet:
+//   "fix"    = Miete/Leasing/Versicherung – steckt schon im Fixkosten-Durchschnitt, wird nicht doppelt gezählt
+//   "steuer" = Finanzamt – taucht in den Kennzahlen-Ausgaben gar nicht auf, kommt oben drauf
+//   sonst    = variabel (Material, Fremdleistung) – konkurriert mit dem Materialdurchschnitt
+{ name: "Sonepar Deutschland",    number: "Material",    amount: 4560, type: "payable",    dueDate: "2026-07-12", kategorie: "material" },
+{ name: "Finanzamt Lindau",       number: "USt-Voranmeldung", amount: 3220, type: "payable", dueDate: "2026-07-15", kategorie: "steuer" },
+{ name: "Würth",                  number: "Material",    amount: 1640, type: "payable",    dueDate: "2026-07-20", kategorie: "material" },
+{ name: "Leasing Sparkasse",      number: "Transporter", amount: 550,  type: "payable",    dueDate: "2026-07-08", kategorie: "fix" },
+{ name: "Allianz",                number: "Betriebshaftpflicht", amount: 1310, type: "payable", dueDate: "2026-07-27", kategorie: "fix" }
 ];
 function getDaysStatus(dueDate) {
 const today = new Date(); today.setHours(0,0,0,0);
@@ -480,6 +484,7 @@ var dueDateVal = document.getElementById("modalDueDate")?.value;
 if (!nameVal || !numberVal || !amountVal || !dueDateVal) { alert("Bitte alle Felder ausfüllen."); return; }
 positions.push({ name: nameVal, number: numberVal, amount: amountVal, type: typeVal, dueDate: dueDateVal });
 renderPositions(getFilters());
+renderPrognose();
 if (modal) modal.style.display = "none";
 ["modalName","modalNumber","modalAmount","modalDueDate"].forEach(function(id) { var el = document.getElementById(id); if (el) el.value = ""; });
 });
@@ -491,6 +496,7 @@ el.addEventListener("click", function(e) {
 if (e.target.classList.contains("delete-btn")) {
 positions.splice(Number(e.target.getAttribute("data-index")), 1);
 renderPositions(getFilters());
+renderPrognose();
 }
 });
 }
@@ -586,7 +592,9 @@ var t = e.target.closest ? e.target.closest(".kz-point") : null;
 if (!t) return;
 var month = t.getAttribute("data-month");
 var value = t.getAttribute("data-value");
-kzPointTooltip.innerHTML = month + " · <span style='font-weight:800'>" + value + "</span>";
+var note  = t.getAttribute("data-note");
+kzPointTooltip.innerHTML = month + " · <span style='font-weight:800'>" + value + "</span>" +
+(note ? "<div style='font-weight:500;font-size:11px;color:#b3bfcb;margin-top:3px'>" + note + "</div>" : "");
 kzPointTooltip.style.display = "block";
 });
 document.addEventListener("mousemove", function(e) {
@@ -830,13 +838,24 @@ else { subEl.innerHTML = kzTrend(((cur - prev) / Math.abs(prev)) * 100, " %", fa
 const prognoseSettings = {
 mindestreserve: 15000,
 horizonMonths:  6,
-baseWindow:     6   // wie viele vergangene Monate als Durchschnitt herangezogen werden
+baseWindow:     6,  // wie viele vergangene Monate als Durchschnitt herangezogen werden
+// Offene Posten (Forderungen/Verbindlichkeiten) in die Prognose einrechnen
+oposEinbeziehen: true,
+// Zahlungsverhalten: Kunden zahlen im Schnitt ein paar Tage nach Fälligkeit,
+// eigene Rechnungen werden zum Fälligkeitstag bezahlt. Geld kommt später, geht pünktlich raus.
+verzugTageKunden:      7,
+verzugTageLieferanten: 0,
+// Forderungen, die länger als X Tage überfällig sind, fließen nicht mehr in die Prognose ein.
+// Sie verschwinden nicht – sie werden separat als "nicht eingerechnet" ausgewiesen.
+ueberfaelligMaxTage: 30
 };
-// Szenario-Faktoren auf die durchschnittlichen Einnahmen/Ausgaben
+// Szenario-Faktoren auf die durchschnittlichen Einnahmen/Ausgaben.
+// pwb = Pauschalwertberichtigung auf den offenen Forderungsbestand (Ausfallrisiko).
+// Bekannte Verbindlichkeiten bleiben unverändert – eine Rechnung, die da ist, ist da.
 const prognoseScenarios = {
-vorsichtig:   { label: "Vorsichtig",   inc: 0.85, exp: 1.08 },
-basis:        { label: "Basis",        inc: 1.00, exp: 1.00 },
-optimistisch: { label: "Optimistisch", inc: 1.12, exp: 0.97 }
+vorsichtig:   { label: "Vorsichtig",   inc: 0.85, exp: 1.08, pwb: 0.05 },
+basis:        { label: "Basis",        inc: 1.00, exp: 1.00, pwb: 0.01 },
+optimistisch: { label: "Optimistisch", inc: 1.12, exp: 0.97, pwb: 0.01 }
 };
 const prognoseOrder = ["vorsichtig", "basis", "optimistisch"];
 let prognoseScenario = "basis";
@@ -860,39 +879,140 @@ return (kennzahlenData.monthsFull && kennzahlenData.monthsFull[key]) || key;
 function pgBase() {
 var d = kennzahlenData, n = d.months.length;
 var len = Math.min(prognoseSettings.baseWindow, n);
-if (!n) return { len: 0, inc: 0, exp: 0, ztk: 0, ztl: 0, per: 0 };
+if (!n) return { len: 0, inc: 0, exp: 0, ztk: 0, ztl: 0, per: 0, fixCost: 0, varCost: 0 };
 var i0 = n - len, i1 = n - 1;
+// Fixkosten = Personal + Miete/Leasing/Versicherung/Energie (steckt in sonstigeAusgaben).
+// Diese laufen unabhängig von offenen Posten weiter.
+// Variable Kosten = Materialeinsatz – nur dieser Block konkurriert mit fälligen Verbindlichkeiten.
+var fixCost = kzAvg(d.personalkosten, i0, i1) + kzAvg(d.sonstigeAusgaben, i0, i1);
+var varCost = kzAvg(d.materialeinsatz, i0, i1);
 return {
 len: len,
 inc: (kzSum(d.einnahmen, i0, i1) + kzSum(d.sonstigeErtraege, i0, i1)) / len,
 exp: kzSum(d.ausgaben, i0, i1) / len,
 ztk: kzAvg(d.zahlungszielKunden, i0, i1),
 ztl: kzAvg(d.zahlungszielLieferanten, i0, i1),
-per: kzAvg(d.personalkosten, i0, i1)
+per: kzAvg(d.personalkosten, i0, i1),
+fixCost: fixCost,
+varCost: varCost
 };
+}
+// "YYYY-MM" – gleiches Format wie der Anfang von dueDate, damit sich beides direkt vergleichen lässt
+function pgMonthKey(year, mi) {
+return year + "-" + (mi < 9 ? "0" : "") + (mi + 1);
+}
+function pgParseDate(iso) {
+var d = new Date(String(iso).slice(0, 10) + "T00:00:00Z");
+return isNaN(d.getTime()) ? null : d;
+}
+function pgKeyOfDate(d) {
+return pgMonthKey(d.getUTCFullYear(), d.getUTCMonth());
+}
+// Kostenart eines Postens – entscheidet, wie die Prognose ihn verrechnet
+function pgKategorie(p) {
+var k = String(p.kategorie || "").toLowerCase();
+if (k === "steuer" || k === "steuern" || k === "finanzamt") return "steuer";
+if (k === "fix" || k === "fixkosten" || k === "miete" || k === "leasing" || k === "versicherung") return "fix";
+return "var";
+}
+// Offene Posten nach ERWARTETEM Zahlungsmonat bündeln – nicht nach Fälligkeitsdatum.
+// Kunden zahlen im Schnitt einige Tage zu spät, wir zahlen pünktlich.
+// refDate = Ende des Startmonats, also der Stand, ab dem die Prognose läuft.
+function pgOposBuckets(firstKey, refDate) {
+var map = {};
+var abgeschrieben = { sum: 0, n: 0 };   // > ueberfaelligMaxTage überfällige Forderungen
+function slot(key) {
+if (!map[key]) map[key] = { rec: 0, recN: 0, payVar: 0, payFix: 0, paySteuer: 0, payN: 0, verspaetet: 0 };
+return map[key];
+}
+(typeof positions !== "undefined" ? positions : []).forEach(function(p) {
+var amt = Number(p.amount) || 0;
+if (!amt || !p.dueDate) return;
+var due = pgParseDate(p.dueDate);
+if (!due) return;
+var isRec = p.type !== "payable";
+var ueberfaelligTage = Math.floor((refDate - due) / 86400000);
+// Alte Forderungen gelten als nicht mehr planbar – sie stützen die Liquidität nicht
+if (isRec && ueberfaelligTage > prognoseSettings.ueberfaelligMaxTage) {
+abgeschrieben.sum += amt; abgeschrieben.n += 1;
+return;
+}
+var delay = isRec ? prognoseSettings.verzugTageKunden : prognoseSettings.verzugTageLieferanten;
+var zahltag = new Date(due.getTime());
+zahltag.setUTCDate(zahltag.getUTCDate() + delay);
+var key = pgKeyOfDate(zahltag);
+// Was rechnerisch in der Vergangenheit liegt, wird im ersten Prognosemonat ausgeglichen
+if (key < firstKey) key = firstKey;
+var b = slot(key);
+if (isRec) {
+b.rec += amt; b.recN += 1;
+if (ueberfaelligTage > 0) b.verspaetet += amt;
+} else {
+var kat = pgKategorie(p);
+if (kat === "steuer") b.paySteuer += amt;
+else if (kat === "fix") b.payFix += amt;
+else b.payVar += amt;
+b.payN += 1;
+}
+});
+map.__abgeschrieben = abgeschrieben;
+return map;
 }
 // Liquiditätsverlauf: Startpunkt = aktueller Kontostand, danach Monat für Monat fortgeschrieben
 function pgSeries() {
 var d = kennzahlenData, n = d.months.length;
 var b = pgBase();
 var sc = prognoseScenarios[prognoseScenario] || prognoseScenarios.basis;
-var inc = b.inc * sc.inc, exp = b.exp * sc.exp;
+var incBase = b.inc * sc.inc;
+// Ausgaben aufteilen: Fixkosten (Personal, Miete, Leasing, Versicherung) laufen immer weiter.
+// Nur der variable Block (Material) konkurriert mit fälligen Verbindlichkeiten.
+var fix = b.fixCost * sc.exp;
+var expVar = b.varCost * sc.exp;
+var expBase = fix + expVar;
 var startKey = n ? d.months[n - 1] : pgMonthOrder[new Date().getMonth()];
-var year = (n && d.years) ? d.years[n - 1] : null;
+var year = (n && d.years) ? d.years[n - 1] : new Date().getFullYear();
 var mi = pgMonthOrder.indexOf(startKey);
 if (mi < 0) mi = new Date().getMonth();
+// Erster Prognosemonat = Startmonat + 1
+var fmi = mi + 1, fyear = year;
+if (fmi > 11) { fmi = 0; fyear += 1; }
+// Stichtag = letzter Tag des Startmonats. Bewusst aus den Daten abgeleitet und nicht
+// aus new Date(), damit Chart und Überfälligkeits-Logik dieselbe Zeitachse benutzen.
+var refDate = new Date(Date.UTC(fyear, fmi, 0));
+var useOpos = prognoseSettings.oposEinbeziehen;
+var buckets = useOpos ? pgOposBuckets(pgMonthKey(fyear, fmi), refDate) : { __abgeschrieben: { sum: 0, n: 0 } };
+var abg = buckets.__abgeschrieben || { sum: 0, n: 0 };
 var cur = accountsTotal;
 // Startmonat = echte Werte aus den Kennzahlen, die Folgemonate sind fortgeschrieben
-var lastInc = n ? (d.einnahmen[n - 1] + d.sonstigeErtraege[n - 1]) : inc;
-var lastExp = n ? d.ausgaben[n - 1] : exp;
-var pts = [{ key: startKey, year: year, liq: cur, delta: null, inc: lastInc, exp: lastExp, isNow: true }];
+var lastInc = n ? (d.einnahmen[n - 1] + d.sonstigeErtraege[n - 1]) : incBase;
+var lastExp = n ? d.ausgaben[n - 1] : expBase;
+var pts = [{ key: startKey, year: year, liq: cur, delta: null, inc: lastInc, exp: lastExp, isNow: true,
+oposIn: 0, oposOut: 0, oposN: 0, incKnown: false, expKnown: false }];
+var totIn = 0, totOut = 0, totN = 0;
+var leer = { rec: 0, recN: 0, payVar: 0, payFix: 0, paySteuer: 0, payN: 0, verspaetet: 0 };
 for (var i = 0; i < prognoseSettings.horizonMonths; i++) {
 mi += 1;
-if (mi > 11) { mi = 0; if (year) year += 1; }
+if (mi > 11) { mi = 0; year += 1; }
+var bk = buckets[pgMonthKey(year, mi)] || leer;
+// Pauschalwertberichtigung auf den erwarteten Zahlungseingang
+var oposIn = bk.rec * (1 - (sc.pwb || 0));
+// Fixkosten-Rechnungen (Leasing, Versicherung) NICHT addieren – sie stecken schon im Fixblock.
+// Steuern dagegen tauchen in den Kennzahlen-Ausgaben gar nicht auf und kommen oben drauf.
+var oposOut = bk.payVar + bk.payFix + bk.paySteuer;
+// Bekannte Posten sind eine Untergrenze: liegt in einem Monat mehr an als der
+// Durchschnitt hergibt, rechnet PAUL mit dem bekannten Betrag statt mit dem Durchschnitt.
+var inc = Math.max(incBase, oposIn);
+var exp = fix + Math.max(expVar, bk.payVar) + bk.paySteuer;
+totIn += oposIn; totOut += oposOut; totN += (bk.recN + bk.payN);
 cur += inc - exp;
-pts.push({ key: pgMonthOrder[mi], year: year, liq: cur, delta: inc - exp, inc: inc, exp: exp, isNow: false });
+pts.push({ key: pgMonthOrder[mi], year: year, liq: cur, delta: inc - exp, inc: inc, exp: exp, isNow: false,
+oposIn: oposIn, oposOut: oposOut, oposN: bk.recN + bk.payN,
+oposSteuer: bk.paySteuer, oposFix: bk.payFix, oposVar: bk.payVar, verspaetet: bk.verspaetet,
+incKnown: oposIn > incBase, expKnown: bk.payVar > expVar || bk.paySteuer > 0 });
 }
-return { points: pts, inc: inc, exp: exp, base: b, scenario: sc };
+return { points: pts, inc: incBase, exp: expBase, fix: fix, expVar: expVar,
+base: b, scenario: sc, oposIn: totIn, oposOut: totOut, oposN: totN, oposActive: useOpos,
+abgeschrieben: abg };
 }
 // Tiefpunkt der Prognose – der Startmonat zählt nicht mit, er ist bereits Realität
 function pgLowest(pts) {
@@ -958,19 +1078,29 @@ axis += "<text x='" + (padL - 10) + "' y='" + (gy + 4).toFixed(1) + "' text-anch
 }
 // Balken: Einnahmen und Ausgaben je Monat, Prognosemonate etwas heller
 var band = innerW / n;
-var barW = Math.max(4, Math.min(16, band * 0.26));
+var barW = Math.max(6, Math.min(24, band * 0.39));
+var barGap = 2;
 var y0 = Y(0);
 var bars = pts.map(function(p, i) {
 var cx = X(i);
 var op = p.isNow ? "1" : "0.55";
-var mLabel = pgMonthName(p.key) + (p.isNow ? "" : " (Prognose)");
-function bar(val, color, bx, name) {
+var mLabel = pgMonthName(p.key) + (p.year ? " " + p.year : "") + (p.isNow ? "" : " (Prognose)");
+function bar(val, color, bx, name, note) {
 var yv = Y(val), bh = Math.max(1, y0 - yv);
-return "<rect class='kz-point' data-month=\"" + name + " · " + mLabel + "\" data-value=\"" + pgFmt(val) + "\" x='" + bx.toFixed(1) +
+return "<rect class='kz-point' data-month=\"" + name + " " + mLabel + "\" data-value=\"" + pgFmt(val) + "\"" +
+(note ? " data-note=\"" + note + "\"" : "") +
+" x='" + bx.toFixed(1) +
 "' y='" + yv.toFixed(1) + "' width='" + barW.toFixed(1) + "' height='" + bh.toFixed(1) +
-"' rx='2' fill='" + color + "' opacity='" + op + "' style='cursor:pointer'></rect>";
+"' rx='2.5' fill='" + color + "' opacity='" + op + "' style='cursor:pointer'></rect>";
 }
-return bar(p.inc, incColor, cx - barW - 1.5, "Einnahmen") + bar(p.exp, expColor, cx + 1.5, "Ausgaben");
+var incNote = p.incKnown ? "aus fälligen Forderungen (" + pgFmt(p.oposIn) + " nach PWB)"
+: (p.oposIn ? "davon " + pgFmt(p.oposIn) + " fällige Forderungen" : (p.isNow ? "" : "Durchschnitt der letzten Monate"));
+var expParts = [];
+if (p.oposVar > s.expVar) expParts.push("inkl. " + pgFmt(p.oposVar) + " fällige Lieferantenrechnungen");
+if (p.oposSteuer) expParts.push("+ " + pgFmt(p.oposSteuer) + " Steuern");
+var expNote = expParts.length ? expParts.join(" · ") : (p.isNow ? "" : "Fixkosten + Ø Material");
+return bar(p.inc, incColor, cx - barW - barGap, "Einnahmen", incNote) +
+bar(p.exp, expColor, cx + barGap, "Ausgaben", expNote);
 }).join("");
 var low = pgLowest(pts);
 var below = low.liq < reserve;
@@ -998,11 +1128,11 @@ var labels = pts.map(function(p, i) {
 var txt = p.key + (p.isNow ? " · jetzt" : "");
 var weight = p.isNow ? "700" : "600";
 var fill = p.isNow ? "#1e2a38" : "#8a96a3";
-return "<text x='" + X(i).toFixed(1) + "' y='" + (h - 9) + "' text-anchor='middle' font-size='11.5' font-weight='" + weight + "' fill='" + fill + "'>" + txt + "</text>";
+return "<text x='" + X(i).toFixed(1) + "' y='" + (h - 9) + "' text-anchor='middle' font-size='11.5' font-weight='" + weight + "' fill='" + fill + "' style='pointer-events:none'>" + txt + "</text>";
 }).join("");
 // Der Wert steht in der Legende – im Chart würde die Beschriftung mit den Balken kollidieren
 var reserveLine =
-"<line x1='" + padL + "' y1='" + yr.toFixed(1) + "' x2='" + (w - padR) + "' y2='" + yr.toFixed(1) + "' stroke='#e07b00' stroke-width='1.25' stroke-dasharray='5 5' opacity='0.85'></line>";
+"<line x1='" + padL + "' y1='" + yr.toFixed(1) + "' x2='" + (w - padR) + "' y2='" + yr.toFixed(1) + "' stroke='#e07b00' stroke-width='1.25' stroke-dasharray='5 5' opacity='0.85' style='pointer-events:none'></line>";
 var legend =
 "<div style='display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:18px;margin-bottom:6px'>" +
 pgLegendItem(incColor, "Einnahmen", "box") +
@@ -1016,9 +1146,9 @@ node.innerHTML = legend +
 "<stop offset='0%' stop-color='" + lineColor + "' stop-opacity='0.16'></stop>" +
 "<stop offset='100%' stop-color='" + lineColor + "' stop-opacity='0'></stop></linearGradient></defs>" +
 grid + axis + bars +
-"<path d='" + areaD + "' fill='url(#pggrad)'></path>" +
+"<path d='" + areaD + "' fill='url(#pggrad)' style='pointer-events:none'></path>" +
 reserveLine +
-"<path d='" + pathD + "' fill='none' stroke='" + lineColor + "' stroke-width='2.5' stroke-linejoin='round' stroke-linecap='round'></path>" +
+"<path d='" + pathD + "' fill='none' stroke='" + lineColor + "' stroke-width='2.5' stroke-linejoin='round' stroke-linecap='round' style='pointer-events:none'></path>" +
 circles + labels + "</svg>";
 }
 function pgRow(label, value, valueColor, bold) {
@@ -1061,8 +1191,15 @@ var liqColor = under ? "#c62828" : "#1e2a38";
 var deltaHTML = p.delta === null
 ? "<span style='color:#9aa6b2'>—</span>"
 : "<span style='color:" + (p.delta >= 0 ? "#1f9d6b" : "#c62828") + "'>" + pgSigned(p.delta) + "</span>";
+var noteParts = [];
+if (p.oposIn)     noteParts.push("<span style='color:#1f9d6b'>" + pgFmt(p.oposIn) + " Forderungen erwartet</span>");
+if (p.oposVar)    noteParts.push("<span style='color:#c62828'>" + pgFmt(p.oposVar) + " Lieferanten</span>");
+if (p.oposSteuer) noteParts.push("<span style='color:#c62828'>" + pgFmt(p.oposSteuer) + " Steuern</span>");
+var oposNote = noteParts.length
+? "<div style='font-size:11.5px;font-weight:500;color:#8a96a3;margin-top:3px'>" + noteParts.join(" · ") + "</div>"
+: "";
 return "<div style='display:grid;grid-template-columns:1fr auto auto;gap:16px;align-items:center;padding:12px 18px;border-top:1px solid #f0f3f6;background:" + (under ? "#fdf6f5" : "transparent") + "'>" +
-"<span style='font-size:13.5px;font-weight:" + (p.isNow ? "700" : "500") + ";color:#1e2a38'>" + pgMonthName(p.key) + (p.isNow ? " <span style=\"font-weight:500;color:#9aa6b2\">· jetzt</span>" : "") + "</span>" +
+"<span style='font-size:13.5px;font-weight:" + (p.isNow ? "700" : "500") + ";color:#1e2a38'>" + pgMonthName(p.key) + (p.isNow ? " <span style=\"font-weight:500;color:#9aa6b2\">· jetzt</span>" : "") + oposNote + "</span>" +
 "<span style='font-size:13.5px;font-weight:700;font-variant-numeric:tabular-nums;color:" + liqColor + ";text-align:right;min-width:88px'>" + pgFmt(p.liq) + "</span>" +
 "<span style='font-size:13.5px;font-weight:600;font-variant-numeric:tabular-nums;text-align:right;min-width:88px'>" + deltaHTML + "</span></div>";
 }).join("");
@@ -1083,17 +1220,34 @@ var annahmenHTML =
 "<div style='font-size:12.5px;color:#8a96a3;margin-bottom:6px'>Szenario " + sc.label + " · " + scNote + "</div>" +
 pgRow("Startliquidität", pgFmt(accountsTotal), "#1e2a38", true) +
 pgRow("Einnahmen Ø / Monat", pgFmt(s.inc)) +
-pgRow("Ausgaben Ø / Monat", pgFmt(s.exp)) +
+pgRow("Fixkosten / Monat", pgFmt(s.fix)) +
+pgRow("Variable Kosten Ø / Monat", pgFmt(s.expVar)) +
 pgRow("Ergebnis Ø / Monat", pgSigned(s.inc - s.exp), (s.inc - s.exp) >= 0 ? "#1f9d6b" : "#c62828", true) +
+(s.oposActive
+? pgRow("Erwartete Forderungen im Zeitraum", pgFmt(s.oposIn), s.oposIn ? "#1f9d6b" : "#9aa6b2") +
+pgRow("Fällige Verbindlichkeiten im Zeitraum", pgFmt(s.oposOut), s.oposOut ? "#c62828" : "#9aa6b2") +
+pgRow("Pauschalwertberichtigung", (Math.round((s.scenario.pwb || 0) * 1000) / 10).toLocaleString("de-DE") + " %", "#8a96a3") +
+(s.abgeschrieben.sum
+? pgRow("Nicht eingerechnet (> " + prognoseSettings.ueberfaelligMaxTage + " Tage überfällig)",
+pgFmt(s.abgeschrieben.sum), "#e07b00")
+: "")
+: "") +
 pgRow("Ø Zahlungsziel Kunden", Math.round(s.base.ztk) + " Tage") +
-pgRow("Ø Zahlungsziel Lieferanten", Math.round(s.base.ztl) + " Tage") +
-pgRow("Personalkosten / Monat", pgFmt(s.base.per)) +
+pgRow("Zahlungsverzug Kunden", "+" + prognoseSettings.verzugTageKunden + " Tage") +
 pgRow("Mindestreserve", pgFmt(reserve), "#e07b00", true) +
 "</div>";
 var infoText =
 "<b>So rechnet PAUL</b><br>" +
 "Startpunkt ist deine aktuelle Liquidität über alle Konten (" + pgFmt(accountsTotal) + "). " +
-"Für jeden Prognosemonat werden die durchschnittlichen Einnahmen und Ausgaben der letzten " + s.base.len + " Monate fortgeschrieben und aufaddiert." +
+"Grundlage sind die Durchschnitte der letzten " + s.base.len + " Monate, getrennt nach Fixkosten (" + pgFmt(s.fix) +
+" – Personal, Miete, Leasing, Versicherung) und variablen Kosten (" + pgFmt(s.expVar) + " – Material)." +
+"<br><br><b>Offene Posten</b><br>" +
+"Zusätzlich schaut PAUL in deine offenen Posten. Ist in einem Monat mehr an Forderungen oder Lieferantenrechnungen fällig, als der Durchschnitt hergibt, rechnet PAUL mit dem bekannten Betrag. " +
+"Fixkosten-Rechnungen wie Leasing oder Versicherung werden nicht doppelt gezählt, Steuerzahlungen kommen oben drauf, weil sie in den Ausgaben-Kennzahlen nicht enthalten sind." +
+"<br><br><b>Zahlungsverhalten</b><br>" +
+"Forderungen werden " + prognoseSettings.verzugTageKunden + " Tage nach Fälligkeit erwartet, eigene Rechnungen zum Fälligkeitstag gezahlt. " +
+"Auf den Forderungsbestand liegt eine Pauschalwertberichtigung von " + (Math.round((sc.pwb || 0) * 1000) / 10).toLocaleString("de-DE") + " %. " +
+"Forderungen, die länger als " + prognoseSettings.ueberfaelligMaxTage + " Tage überfällig sind, fließen nicht in die Prognose ein – sie werden unter den Annahmen separat ausgewiesen." +
 "<br><br><b>Szenarien</b><br>" +
 "Vorsichtig: " + pgPct(prognoseScenarios.vorsichtig.inc) + " Einnahmen, " + pgPct(prognoseScenarios.vorsichtig.exp) + " Ausgaben – für Zahlungsausfälle und Kostensteigerungen.<br>" +
 "Basis: unveränderte Durchschnittswerte.<br>" +
@@ -1149,6 +1303,7 @@ var parsed = parseCSV(e.target.result);
 if (parsed.length === 0) { alert("Die CSV-Datei enthält keine gültigen Einträge."); return; }
 parsed.forEach(function(p) { positions.push(p); });
 renderPositions(getFilters());
+renderPrognose();
 alert(parsed.length + " Positionen aus CSV importiert.");
 };
 reader.readAsText(file, "UTF-8"); csvInput.value = "";
