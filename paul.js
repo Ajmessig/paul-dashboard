@@ -834,7 +834,6 @@ container.innerHTML =
 "<div style='display:flex;gap:4px;background:#eef1f4;padding:4px;border-radius:9px'>" + tabsHTML + "</div>" +
 "</div>" +
 "<div style='display:grid;grid-template-columns:repeat(3,1fr);gap:18px;align-items:start'>" + einnahmenHTML + ausgabenHTML + gewinnHTML + "</div>" +
-"<div style='margin-top:18px;padding:14px 18px;border-radius:12px;background:#eef2f6;font-size:12.5px;color:#5b6776;line-height:1.6'>Layout-Idee: Einnahmen, Ausgaben und Gewinn stehen als Spalten nebeneinander — alle drei auf einen Blick, ohne zu scrollen. Die Kennzahlen je Kategorie sind darunter vertikal gestapelt statt in einem Karten-Raster.</div>" +
 "</div>";
 container.querySelectorAll("[data-kz-period]").forEach(function(btn) {
 btn.addEventListener("click", function() {
