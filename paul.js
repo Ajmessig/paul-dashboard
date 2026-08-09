@@ -70,6 +70,9 @@ b.style.borderLeft = "3px solid #1f9d6b";
 b.style.fontWeight = "600";
 b.style.color = "#fff";
 });
+// Charts nach dem Sichtbarwerden neu zeichnen - versteckte Container haben Breite 0
+if (typeof pgDrawChart === "function") pgDrawChart();
+if (typeof kzDrawSparklines === "function") kzDrawSparklines();
 });
 });
 
@@ -493,42 +496,6 @@ renderPositions(getFilters());
 }
 });
 
-// ===== PROGNOSE - forecast chart (Chart.js) =====
-const kpiIncome =   [12000, 15000, 13000, 17000, 16000, 18000];
-const kpiExpenses = [8000,  9000,  9500,  11000, 10000, 10500];
-const avgMonthlyExp  = kpiExpenses.reduce(function(a, b) { return a + b; }, 0) / kpiExpenses.length;
-const avgMonthlyInc  = kpiIncome.reduce(function(a, b) { return a + b; }, 0) / kpiIncome.length;
-const forecastCanvas = document.getElementById("forecastChart");
-if (forecastCanvas) {
-const forecastMonths   = ["Jan","Feb","Mär","Apr","Mai","Jun","Jul","Aug","Sep"];
-const forecastIncome   = kpiIncome.concat([Math.round(avgMonthlyInc), Math.round(avgMonthlyInc), Math.round(avgMonthlyInc)]);
-const forecastExpenses = kpiExpenses.concat([Math.round(avgMonthlyExp), Math.round(avgMonthlyExp), Math.round(avgMonthlyExp)]);
-let fcLiquidity = []; let fcCurrent = accountsTotal;
-for (let i = 0; i < forecastMonths.length; i++) {
-fcCurrent += forecastIncome[i] - forecastExpenses[i];
-fcLiquidity.push(fcCurrent);
-}
-const forecastCtx = forecastCanvas.getContext("2d");
-new Chart(forecastCtx, {
-data: {
-labels: forecastMonths,
-datasets: [
-{ type: "bar", label: "Einnahmen", data: forecastIncome, backgroundColor: forecastIncome.map(function(_, i) { return i < 6 ? "#1f9d6b" : "rgba(31,157,107,0.4)"; }) },
-{ type: "bar", label: "Ausgaben", data: forecastExpenses, backgroundColor: forecastExpenses.map(function(_, i) { return i < 6 ? "#e0533d" : "rgba(224,83,61,0.4)"; }) },
-{ type: "line", label: "Liquidität", data: fcLiquidity, borderColor: "#2f80ed", backgroundColor: "rgba(47,128,237,0.08)", borderWidth: 2, pointBackgroundColor: fcLiquidity.map(function(_, i) { return i < 6 ? "#2f80ed" : "#fff"; }), pointBorderColor: "#2f80ed", tension: 0.3, fill: true }
-]
-},
-options: {
-responsive: true, maintainAspectRatio: false,
-plugins: {
-tooltip: { callbacks: { label: function(ctx) { return ctx.parsed.y === null ? null : ctx.dataset.label + ": " + ctx.parsed.y.toLocaleString("de-DE") + " €"; } } },
-legend: { position: "top" }
-},
-scales: { y: { ticks: { callback: function(val) { return val.toLocaleString("de-DE") + " €"; } } } }
-}
-});
-}
-
 // ===== KENNZAHLEN - data + helpers + render + Umsatz card =====
 const kennzahlenData = {
 months:     ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun"],
@@ -858,8 +825,252 @@ else { subEl.innerHTML = kzTrend(((cur - prev) / Math.abs(prev)) * 100, " %", fa
 }
 }
 
+// ===== PROGNOSE - Szenarien, Chart, Tabelle, Annahmen =====
+// PLACEHOLDER: kommt später aus den Einstellungen bzw. der API
+const prognoseSettings = {
+mindestreserve: 15000,
+horizonMonths:  6,
+baseWindow:     6   // wie viele vergangene Monate als Durchschnitt herangezogen werden
+};
+// Szenario-Faktoren auf die durchschnittlichen Einnahmen/Ausgaben
+const prognoseScenarios = {
+vorsichtig:   { label: "Vorsichtig",   inc: 0.85, exp: 1.08 },
+basis:        { label: "Basis",        inc: 1.00, exp: 1.00 },
+optimistisch: { label: "Optimistisch", inc: 1.12, exp: 0.97 }
+};
+const prognoseOrder = ["vorsichtig", "basis", "optimistisch"];
+let prognoseScenario = "basis";
+const pgMonthOrder = ["Jan","Feb","Mär","Apr","Mai","Jun","Jul","Aug","Sep","Okt","Nov","Dez"];
+function pgFmt(n) {
+return Math.round(n).toLocaleString("de-DE") + " €";
+}
+function pgSigned(n) {
+var s = Math.round(n);
+var sign = s > 0 ? "+" : (s < 0 ? "−" : "");
+return sign + Math.abs(s).toLocaleString("de-DE") + " €";
+}
+function pgPct(f) {
+var p = Math.round((f - 1) * 100);
+return (p > 0 ? "+" : "") + p + " %";
+}
+function pgMonthName(key) {
+return (kennzahlenData.monthsFull && kennzahlenData.monthsFull[key]) || key;
+}
+// Durchschnittswerte aus den Kennzahlen-Daten – identische Datenbasis wie die anderen Seiten
+function pgBase() {
+var d = kennzahlenData, n = d.months.length;
+var len = Math.min(prognoseSettings.baseWindow, n);
+if (!n) return { len: 0, inc: 0, exp: 0, ztk: 0, ztl: 0, per: 0 };
+var i0 = n - len, i1 = n - 1;
+return {
+len: len,
+inc: (kzSum(d.einnahmen, i0, i1) + kzSum(d.sonstigeErtraege, i0, i1)) / len,
+exp: kzSum(d.ausgaben, i0, i1) / len,
+ztk: kzAvg(d.zahlungszielKunden, i0, i1),
+ztl: kzAvg(d.zahlungszielLieferanten, i0, i1),
+per: kzAvg(d.personalkosten, i0, i1)
+};
+}
+// Liquiditätsverlauf: Startpunkt = aktueller Kontostand, danach Monat für Monat fortgeschrieben
+function pgSeries() {
+var d = kennzahlenData, n = d.months.length;
+var b = pgBase();
+var sc = prognoseScenarios[prognoseScenario] || prognoseScenarios.basis;
+var inc = b.inc * sc.inc, exp = b.exp * sc.exp;
+var startKey = n ? d.months[n - 1] : pgMonthOrder[new Date().getMonth()];
+var year = (n && d.years) ? d.years[n - 1] : null;
+var mi = pgMonthOrder.indexOf(startKey);
+if (mi < 0) mi = new Date().getMonth();
+var cur = accountsTotal;
+var pts = [{ key: startKey, year: year, liq: cur, delta: null, isNow: true }];
+for (var i = 0; i < prognoseSettings.horizonMonths; i++) {
+mi += 1;
+if (mi > 11) { mi = 0; if (year) year += 1; }
+cur += inc - exp;
+pts.push({ key: pgMonthOrder[mi], year: year, liq: cur, delta: inc - exp, isNow: false });
+}
+return { points: pts, inc: inc, exp: exp, base: b, scenario: sc };
+}
+// Tiefpunkt der Prognose – der Startmonat zählt nicht mit, er ist bereits Realität
+function pgLowest(pts) {
+var low = pts[1] || pts[0];
+for (var i = 2; i < pts.length; i++) { if (pts[i].liq < low.liq) low = pts[i]; }
+return low;
+}
+// Chart wird erst nach dem Rendern gezeichnet, damit die echte Containerbreite bekannt ist
+function pgDrawChart() {
+var node = document.getElementById("prognoseChart");
+if (!node) return;
+var w = Math.round(node.getBoundingClientRect().width);
+if (!w) return;
+var s = pgSeries();
+var pts = s.points, n = pts.length;
+var reserve = prognoseSettings.mindestreserve;
+var h = 250, padL = 8, padR = 8, padT = 34, padB = 30;
+var innerW = w - padL - padR, innerH = h - padT - padB;
+var vals = pts.map(function(p) { return p.liq; }).concat([reserve]);
+var minV = Math.min.apply(null, vals), maxV = Math.max.apply(null, vals);
+var span = (maxV - minV) || Math.max(Math.abs(maxV), 1);
+minV -= span * 0.2; maxV += span * 0.2;
+var range = (maxV - minV) || 1;
+function X(i) { return n === 1 ? padL + innerW / 2 : padL + innerW * i / (n - 1); }
+function Y(v) { return padT + (1 - (v - minV) / range) * innerH; }
+var low = pgLowest(pts);
+var below = low.liq < reserve;
+var lineColor = "#1f9d6b";
+var coords = pts.map(function(p, i) { return { x: X(i), y: Y(p.liq) }; });
+var pathD = "M" + coords.map(function(c) { return c.x.toFixed(1) + "," + c.y.toFixed(1); }).join(" L");
+var areaD = pathD + " L" + coords[n - 1].x.toFixed(1) + "," + (h - padB).toFixed(1) +
+" L" + coords[0].x.toFixed(1) + "," + (h - padB).toFixed(1) + " Z";
+var yr = Y(reserve);
+var circles = pts.map(function(p, i) {
+var c = coords[i];
+var isLow = p === low;
+var dot;
+if (isLow && below) {
+dot = "<circle cx='" + c.x.toFixed(1) + "' cy='" + c.y.toFixed(1) + "' r='5.5' fill='#fff' stroke='#c62828' stroke-width='2.5' style='pointer-events:none'></circle>";
+} else if (p.isNow) {
+dot = "<circle cx='" + c.x.toFixed(1) + "' cy='" + c.y.toFixed(1) + "' r='4.5' fill='" + lineColor + "' style='pointer-events:none'></circle>";
+} else {
+dot = "<circle cx='" + c.x.toFixed(1) + "' cy='" + c.y.toFixed(1) + "' r='3.5' fill='#fff' stroke='" + lineColor + "' stroke-width='2' style='pointer-events:none'></circle>";
+}
+var label = pgMonthName(p.key) + (p.year ? " " + p.year : "");
+var hit = "<circle class='kz-point' data-month=\"" + label + "\" data-value=\"" + pgFmt(p.liq) + "\" cx='" + c.x.toFixed(1) + "' cy='" + c.y.toFixed(1) + "' r='13' fill='transparent' style='cursor:pointer'></circle>";
+return dot + hit;
+}).join("");
+var labels = pts.map(function(p, i) {
+var anchor = i === 0 ? "start" : (i === n - 1 ? "end" : "middle");
+var txt = p.key + (p.isNow ? " · jetzt" : "");
+var weight = p.isNow ? "700" : "600";
+var fill = p.isNow ? "#1e2a38" : "#8a96a3";
+return "<text x='" + X(i).toFixed(1) + "' y='" + (h - 9) + "' text-anchor='" + anchor + "' font-size='11.5' font-weight='" + weight + "' fill='" + fill + "'>" + txt + "</text>";
+}).join("");
+var reserveLine =
+"<line x1='" + padL + "' y1='" + yr.toFixed(1) + "' x2='" + (w - padR) + "' y2='" + yr.toFixed(1) + "' stroke='#e07b00' stroke-width='1.25' stroke-dasharray='5 5' opacity='0.8'></line>" +
+"<text x='" + (w - padR) + "' y='" + (yr - 8).toFixed(1) + "' text-anchor='end' font-size='11.5' font-weight='700' fill='#e07b00'>Mindestreserve " + pgFmt(reserve) + "</text>";
+node.innerHTML =
+"<svg width='" + w + "' height='" + h + "' viewBox='0 0 " + w + " " + h + "' style='display:block;overflow:visible'>" +
+"<defs><linearGradient id='pggrad' x1='0' y1='0' x2='0' y2='1'>" +
+"<stop offset='0%' stop-color='" + lineColor + "' stop-opacity='0.18'></stop>" +
+"<stop offset='100%' stop-color='" + lineColor + "' stop-opacity='0'></stop></linearGradient></defs>" +
+"<path d='" + areaD + "' fill='url(#pggrad)'></path>" +
+reserveLine +
+"<path d='" + pathD + "' fill='none' stroke='" + lineColor + "' stroke-width='2.5' stroke-linejoin='round' stroke-linecap='round'></path>" +
+circles + labels + "</svg>";
+}
+function pgRow(label, value, valueColor, bold) {
+return "<div style='display:flex;justify-content:space-between;align-items:center;gap:14px;padding:11px 0;border-top:1px solid #f0f3f6'>" +
+"<span style='font-size:13px;color:#5b6776;font-weight:500'>" + label + "</span>" +
+"<span style='font-size:13px;font-weight:" + (bold ? "700" : "600") + ";font-variant-numeric:tabular-nums;color:" + (valueColor || "#1e2a38") + ";white-space:nowrap'>" + value + "</span></div>";
+}
+function renderPrognose() {
+var container = document.getElementById("prognoseContainer");
+if (!container) return;
+var s = pgSeries();
+var pts = s.points, reserve = prognoseSettings.mindestreserve;
+var low = pgLowest(pts);
+var below = low.liq < reserve;
+var lowLabel = pgMonthName(low.key);
+var gap = reserve - low.liq;
+var alertColor = below ? "#c62828" : "#1f9d6b";
+var alertBg = below ? "#fdf3f2" : "#f3f8f4";
+var alertTail = below
+? " · unter der Mindestreserve – Achtung."
+: " · du bleibst über der Mindestreserve.";
+var alertHTML =
+"<div style='display:flex;align-items:center;gap:9px;padding:11px 14px;border-radius:10px;background:" + alertBg + ";margin-bottom:14px'>" +
+"<span style='width:9px;height:9px;border-radius:50%;background:" + alertColor + ";flex:none'></span>" +
+"<span style='font-size:13.5px;color:#3a4a57'><b style='color:" + alertColor + "'>Tiefster Stand: " + pgFmt(low.liq) + " im " + lowLabel + "</b>" + alertTail + "</span></div>";
+if (below) {
+alertHTML +=
+"<div style='display:flex;align-items:flex-start;gap:9px;padding:0 14px 12px;font-size:13px;color:#5b6776;line-height:1.55'>" +
+"<span style='flex:none;width:9px'></span><span>Im " + lowLabel + " fehlen dir <b style='color:#c62828'>" + pgFmt(gap) + "</b> bis zur Mindestreserve. " +
+"Hol offene Forderungen früher rein, verschiebe größere Anschaffungen oder sprich rechtzeitig mit deiner Bank.</span></div>";
+}
+var tabsHTML = prognoseOrder.map(function(k) {
+var active = k === prognoseScenario;
+return "<button data-pg-scenario='" + k + "' style='padding:8px 18px;border-radius:8px;border:none;font-size:13px;font-weight:600;font-family:inherit;cursor:pointer;background:" +
+(active ? "#1e2a38" : "transparent") + ";color:" + (active ? "#fff" : "#5b6776") + "'>" + prognoseScenarios[k].label + "</button>";
+}).join("");
+var rowsHTML = pts.map(function(p) {
+var under = p.liq < reserve;
+var liqColor = under ? "#c62828" : "#1e2a38";
+var deltaHTML = p.delta === null
+? "<span style='color:#9aa6b2'>—</span>"
+: "<span style='color:" + (p.delta >= 0 ? "#1f9d6b" : "#c62828") + "'>" + pgSigned(p.delta) + "</span>";
+return "<div style='display:grid;grid-template-columns:1fr auto auto;gap:16px;align-items:center;padding:12px 18px;border-top:1px solid #f0f3f6;background:" + (under ? "#fdf6f5" : "transparent") + "'>" +
+"<span style='font-size:13.5px;font-weight:" + (p.isNow ? "700" : "500") + ";color:#1e2a38'>" + pgMonthName(p.key) + (p.isNow ? " <span style=\"font-weight:500;color:#9aa6b2\">· jetzt</span>" : "") + "</span>" +
+"<span style='font-size:13.5px;font-weight:700;font-variant-numeric:tabular-nums;color:" + liqColor + ";text-align:right;min-width:88px'>" + pgFmt(p.liq) + "</span>" +
+"<span style='font-size:13.5px;font-weight:600;font-variant-numeric:tabular-nums;text-align:right;min-width:88px'>" + deltaHTML + "</span></div>";
+}).join("");
+var tableHTML =
+"<div style='background:#fff;border:1px solid #e7ebef;border-radius:14px;overflow:hidden;box-shadow:0 1px 2px rgba(16,30,50,0.04)'>" +
+"<div style='display:grid;grid-template-columns:1fr auto auto;gap:16px;padding:12px 18px;background:#f8fafb'>" +
+"<span style='font-size:12px;font-weight:600;color:#8a96a3'>Monat</span>" +
+"<span style='font-size:12px;font-weight:600;color:#8a96a3;text-align:right;min-width:88px'>Liquidität</span>" +
+"<span style='font-size:12px;font-weight:600;color:#8a96a3;text-align:right;min-width:88px'>Veränderung</span></div>" +
+rowsHTML + "</div>";
+var sc = s.scenario;
+var scNote = prognoseScenario === "basis"
+? "Durchschnitt der letzten " + s.base.len + " Monate"
+: pgPct(sc.inc) + " Einnahmen · " + pgPct(sc.exp) + " Ausgaben";
+var annahmenHTML =
+"<div style='background:#fff;border:1px solid #e7ebef;border-radius:14px;padding:18px 20px;box-shadow:0 1px 2px rgba(16,30,50,0.04)'>" +
+"<div style='font-size:15px;font-weight:700;color:#1e2a38;margin-bottom:4px'>Annahmen</div>" +
+"<div style='font-size:12.5px;color:#8a96a3;margin-bottom:6px'>Szenario " + sc.label + " · " + scNote + "</div>" +
+pgRow("Startliquidität", pgFmt(accountsTotal), "#1e2a38", true) +
+pgRow("Einnahmen Ø / Monat", pgFmt(s.inc)) +
+pgRow("Ausgaben Ø / Monat", pgFmt(s.exp)) +
+pgRow("Ergebnis Ø / Monat", pgSigned(s.inc - s.exp), (s.inc - s.exp) >= 0 ? "#1f9d6b" : "#c62828", true) +
+pgRow("Ø Zahlungsziel Kunden", Math.round(s.base.ztk) + " Tage") +
+pgRow("Ø Zahlungsziel Lieferanten", Math.round(s.base.ztl) + " Tage") +
+pgRow("Personalkosten / Monat", pgFmt(s.base.per)) +
+pgRow("Mindestreserve", pgFmt(reserve), "#e07b00", true) +
+"</div>";
+var infoText =
+"<b>So rechnet PAUL</b><br>" +
+"Startpunkt ist deine aktuelle Liquidität über alle Konten (" + pgFmt(accountsTotal) + "). " +
+"Für jeden Prognosemonat werden die durchschnittlichen Einnahmen und Ausgaben der letzten " + s.base.len + " Monate fortgeschrieben und aufaddiert." +
+"<br><br><b>Szenarien</b><br>" +
+"Vorsichtig: " + pgPct(prognoseScenarios.vorsichtig.inc) + " Einnahmen, " + pgPct(prognoseScenarios.vorsichtig.exp) + " Ausgaben – für Zahlungsausfälle und Kostensteigerungen.<br>" +
+"Basis: unveränderte Durchschnittswerte.<br>" +
+"Optimistisch: " + pgPct(prognoseScenarios.optimistisch.inc) + " Einnahmen, " + pgPct(prognoseScenarios.optimistisch.exp) + " Ausgaben – gute Auftragslage." +
+"<br><br>Die gestrichelte Linie ist deine Mindestreserve. Fällt die Prognose darunter, warnt dich PAUL.";
+container.innerHTML =
+"<style>.pg-info-wrap{position:relative;display:inline-flex;vertical-align:middle}" +
+".pg-info-wrap .pg-tooltip{display:none;position:absolute;top:28px;left:0;width:300px;background:#1e2a38;color:#fff;font-size:12px;font-weight:500;line-height:1.6;padding:14px 16px;border-radius:11px;box-shadow:0 12px 32px rgba(16,30,50,0.24);z-index:40;text-align:left;pointer-events:none}" +
+".pg-info-wrap:hover .pg-tooltip{display:block}</style>" +
+"<div style='display:flex;flex-direction:column;font-family:Inter,system-ui,sans-serif;color:#1e2a38'>" +
+"<div style='display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:12px'>" +
+"<div><h1 style='margin:0;font-size:25px;font-weight:700;letter-spacing:-0.02em;color:#1e2a38;display:flex;align-items:center;gap:9px'>Prognose" +
+"<span class='pg-info-wrap'><span style='width:19px;height:19px;border-radius:50%;border:1.5px solid #c8d2dc;color:#9aa6b2;font-size:11px;font-weight:700;font-style:italic;font-family:Georgia,serif;display:flex;align-items:center;justify-content:center;cursor:help'>i</span>" +
+"<span class='pg-tooltip'>" + infoText + "</span></span></h1>" +
+"<div style='font-size:13px;color:#8a96a3;margin-top:4px'>Liquidität der nächsten " + prognoseSettings.horizonMonths + " Monate · Szenario wählen</div></div>" +
+"<div style='display:flex;gap:6px;background:#eef1f4;padding:4px;border-radius:11px'>" + tabsHTML + "</div>" +
+"</div>" +
+"<div style='background:#fff;border:1px solid #e7ebef;border-radius:14px;padding:18px 20px;box-shadow:0 1px 2px rgba(16,30,50,0.04);margin-bottom:16px'>" +
+alertHTML +
+"<div id='prognoseChart' style='width:100%;height:250px'></div>" +
+"</div>" +
+"<div style='display:grid;grid-template-columns:1.55fr 1fr;gap:16px;align-items:start'>" + tableHTML + annahmenHTML + "</div>" +
+"</div>";
+container.querySelectorAll("[data-pg-scenario]").forEach(function(btn) {
+btn.addEventListener("click", function() {
+prognoseScenario = btn.getAttribute("data-pg-scenario");
+renderPrognose();
+});
+});
+pgDrawChart();
+}
+var pgResizeTimer = null;
+window.addEventListener("resize", function() {
+clearTimeout(pgResizeTimer);
+pgResizeTimer = setTimeout(pgDrawChart, 120);
+});
+
 // ===== INIT CALLS + CSV UPLOAD =====
 renderKennzahlen();
+renderPrognose();
 renderPositions(getFilters());
 setTimeout(function() { renderOposSummary(); }, 300);
 var csvInput = document.createElement("input");
