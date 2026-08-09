@@ -532,7 +532,9 @@ scales: { y: { ticks: { callback: function(val) { return val.toLocaleString("de-
 // ===== KENNZAHLEN - data + helpers + render + Umsatz card =====
 const kennzahlenData = {
 months:     ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun"],
-monthsFull: { "Jan": "Januar", "Feb": "Februar", "Mär": "März", "Apr": "April", "Mai": "Mai", "Jun": "Juni" },
+monthsFull: { "Jan": "Januar", "Feb": "Februar", "Mär": "März", "Apr": "April", "Mai": "Mai", "Jun": "Juni", "Jul": "Juli", "Aug": "August", "Sep": "September", "Okt": "Oktober", "Nov": "November", "Dez": "Dezember" },
+// PLACEHOLDER: years[] muss parallel zu months[] laufen – kommt später aus der API
+years:      [2026,  2026,  2026,  2026,  2026,  2026],
 einnahmen:               [17200, 18600, 16900, 20100, 18700, 19800],
 sonstigeErtraege:        [860,   640,   980,   1120,  920,   1240],
 materialeinsatz:         [4200,  4600,  4100,  5350,  4900,  4920],
@@ -572,14 +574,15 @@ var color = good ? "#1f9d6b" : "#e0533d";
 var arrow = up ? "▲" : "▼";
 return "<span style='color:" + color + "'>" + arrow + " " + kzNum(delta) + suffix + "</span>";
 }
-function kzSparkline(values, monthLabels, color) {
-var w = 220, h = 76, padL = 6, padR = 6, padT = 10, padB = 16;
+function kzSparkline(values, monthLabels, color, width) {
+var w = Math.max(Math.round(width || 220), 120), h = 76, padL = 6, padR = 6, padT = 10, padB = 16;
 var n = values.length;
+if (n === 0) return "";
 var minV = Math.min.apply(null, values), maxV = Math.max.apply(null, values);
 var range = (maxV - minV) || 1;
 var pts = values.map(function(v, i) {
 return {
-x: padL + ((w - padL - padR) * i / (n - 1)),
+x: n === 1 ? w / 2 : padL + ((w - padL - padR) * i / (n - 1)),
 y: padT + (1 - (v - minV) / range) * (h - padT - padB)
 };
 });
@@ -601,7 +604,7 @@ var anchor = i === 0 ? "start" : (i === pts.length - 1 ? "end" : "middle");
 var weight = i === pts.length - 1 ? "700" : "500";
 return "<text x='" + p.x.toFixed(1) + "' y='" + (h - 4) + "' text-anchor='" + anchor + "' font-size='10' fill='#9aa6b2' font-weight='" + weight + "'>" + monthLabels[i] + "</text>";
 }).join("");
-return "<svg width='100%' height='100%' viewBox='0 0 " + w + " " + h + "' preserveAspectRatio='none' style='display:block;overflow:visible'>" +
+return "<svg width='" + w + "' height='" + h + "' viewBox='0 0 " + w + " " + h + "' style='display:block;overflow:visible'>" +
 "<defs><linearGradient id='" + gradId + "' x1='0' y1='0' x2='0' y2='1'><stop offset='0%' stop-color='" + color + "' stop-opacity='0.18'></stop><stop offset='100%' stop-color='" + color + "' stop-opacity='0'></stop></linearGradient></defs>" +
 "<path d='" + areaD + "' fill='url(#" + gradId + ")'></path>" +
 "<path d='" + pathD + "' fill='none' stroke='" + color + "' stroke-width='2.25' stroke-linejoin='round' stroke-linecap='round'></path>" +
@@ -660,35 +663,55 @@ return "<div style='background:#fff;border:1px solid #e7ebef;border-radius:14px;
 "<div style='display:flex;flex-direction:column'>" + kpiRowsHTML + "</div>" +
 "</div>";
 }
-function kzPeriodValue(arr, mode) {
+// Gewünschte Fenstergröße, begrenzt auf die tatsächlich vorhandenen Monate
+function kzWindowLen() {
 var n = kennzahlenData.months.length;
+if (kennzahlenPeriod === "month") return Math.min(1, n);
+if (kennzahlenPeriod === "3m") return Math.min(3, n);
+return Math.min(6, n);
+}
+function kzMonthLabel(i, withYear) {
+var d = kennzahlenData, key = d.months[i];
+var name = (d.monthsFull && d.monthsFull[key]) || key || "";
+var year = d.years && d.years[i];
+return withYear && year ? name + " " + year : name;
+}
+function kzPeriodValue(arr, mode) {
+var n = kennzahlenData.months.length, len = kzWindowLen();
+if (!n || !len) return { cur: 0, prev: null };
 if (kennzahlenPeriod === "month") {
-return { cur: arr[n - 1], prev: arr[n - 2] };
+return { cur: arr[n - 1], prev: n >= 2 ? arr[n - 2] : null };
 }
 var fn = mode === "avg" ? kzAvg : kzSum;
-if (kennzahlenPeriod === "3m") {
-return { cur: fn(arr, n - 3, n - 1), prev: fn(arr, n - 6, n - 4) };
-}
-return { cur: fn(arr, 0, n - 1), prev: null };
+var cur = fn(arr, n - len, n - 1);
+var prev = null;
+// Vorperiode nur, wenn wirklich ein zweites volles Fenster existiert
+if (kennzahlenPeriod === "3m" && n >= len * 2) prev = fn(arr, n - len * 2, n - len - 1);
+return { cur: cur, prev: prev };
 }
 function kzPeriodLabel() {
-var m = kennzahlenData.months, mf = kennzahlenData.monthsFull, n = m.length;
-if (kennzahlenPeriod === "month") return mf[m[n - 1]] + " 2026";
-if (kennzahlenPeriod === "3m") return "Summe · " + mf[m[n - 3]] + " – " + mf[m[n - 1]];
-return "Summe · " + mf[m[0]] + " – " + mf[m[n - 1]];
+var d = kennzahlenData, n = d.months.length, len = kzWindowLen();
+if (!n) return "";
+if (len <= 1) return kzMonthLabel(n - 1, true);
+var i0 = n - len, i1 = n - 1;
+var crossesYear = !!(d.years && d.years[i0] !== d.years[i1]);
+return "Summe · " + kzMonthLabel(i0, crossesYear) + " – " + kzMonthLabel(i1, true);
 }
 function kzBigTrendHTML(cur, prev, invert) {
-if (kennzahlenPeriod === "6m") {
-var perMonth = cur / kennzahlenData.months.length;
-return "<span style='color:#8a96a3'>Ø " + kzFmt(perMonth) + " pro Monat</span>";
+var len = kzWindowLen();
+var noPrev = prev === null || prev === undefined || isNaN(prev) || prev === 0;
+if (noPrev) {
+if (len > 1) return "<span style='color:#8a96a3'>Ø " + kzFmt(cur / len) + " pro Monat</span>";
+return "<span style='color:#8a96a3'>Keine Vorperiode</span>";
 }
-var delta = prev ? ((cur - prev) / Math.abs(prev)) * 100 : 0;
-var refText = kennzahlenPeriod === "month" ? " vs. Vormonat" : " vs. vorherige 3 Monate";
+var delta = ((cur - prev) / Math.abs(prev)) * 100;
+var refText = len === 1 ? " vs. Vormonat" : " vs. vorherige " + len + " Monate";
 return kzTrend(delta, " %", invert) + refText;
 }
 function kzSubTrendHTML(cur, prev, mode, suffix, invert) {
-if (kennzahlenPeriod === "6m") {
-return "<span style='color:#8a96a3'>Ø letzte 6 Monate</span>";
+var len = kzWindowLen();
+if (prev === null || prev === undefined || isNaN(prev)) {
+return "<span style='color:#8a96a3'>" + (len > 1 ? "Ø letzte " + len + " Monate" : "Kein Vormonat") + "</span>";
 }
 if (mode === "abs") {
 return kzTrend(cur - prev, suffix || "", invert);
@@ -696,21 +719,50 @@ return kzTrend(cur - prev, suffix || "", invert);
 var pct = prev ? ((cur - prev) / Math.abs(prev)) * 100 : 0;
 return kzTrend(pct, " %", invert);
 }
+function kzDrawSparklines() {
+var nodes = document.querySelectorAll(".kz-spark");
+for (var i = 0; i < nodes.length; i++) {
+var node = nodes[i];
+var w = Math.round(node.getBoundingClientRect().width);
+if (!w) continue;
+if (node.getAttribute("data-w") === String(w)) continue;
+node.setAttribute("data-w", String(w));
+node.innerHTML = kzSparkline(
+JSON.parse(node.getAttribute("data-values")),
+JSON.parse(node.getAttribute("data-labels")),
+node.getAttribute("data-color"),
+w
+);
+}
+}
+var kzResizeTimer = null;
+window.addEventListener("resize", function() {
+clearTimeout(kzResizeTimer);
+kzResizeTimer = setTimeout(kzDrawSparklines, 120);
+});
 function kzChartHTML(arr, color, lightColor) {
-var m = kennzahlenData.months, n = m.length;
+var m = kennzahlenData.months, n = m.length, len = kzWindowLen();
+if (!n) return "";
 if (kennzahlenPeriod === "month") {
+if (n < 2) return "";
 return kzTwoBarChart(m[n - 2], arr[n - 2], m[n - 1], arr[n - 1], color, lightColor);
 }
-var values = kennzahlenPeriod === "3m" ? arr.slice(n - 3) : arr.slice();
-var labels = kennzahlenPeriod === "3m" ? m.slice(n - 3) : m.slice();
-return "<div style='height:76px;margin-bottom:14px'>" + kzSparkline(values, labels, color) + "</div>";
+var values = arr.slice(n - len);
+var labels = m.slice(n - len);
+return "<div class='kz-spark' data-values='" + JSON.stringify(values) + "' data-labels='" + JSON.stringify(labels) + "' data-color='" + color + "' style='height:76px;margin-bottom:14px'></div>";
 }
 function renderKennzahlen() {
 var container = document.getElementById("kennzahlenContainer");
 if (!container) return;
 var d = kennzahlenData;
-var subtitleSuffix = kennzahlenPeriod === "month" ? "aktueller Monat" : (kennzahlenPeriod === "3m" ? "letzte 3 Monate" : "letzte 6 Monate");
-var labelSuffix = kennzahlenPeriod === "month" ? " (Monat)" : (kennzahlenPeriod === "3m" ? " (3 Monate)" : " (6 Monate)");
+var nMonths = d.months.length;
+var len3 = Math.min(3, nMonths), len6 = Math.min(6, nMonths);
+// Auf einen gültigen Zeitraum zurückfallen, wenn zu wenig Monate vorhanden sind
+if (kennzahlenPeriod === "3m" && len3 < 2) kennzahlenPeriod = "month";
+if (kennzahlenPeriod === "6m" && len6 <= len3) kennzahlenPeriod = len3 > 1 ? "3m" : "month";
+var winLen = kzWindowLen();
+var subtitleSuffix = winLen <= 1 ? "aktueller Monat" : "letzte " + winLen + " Monate";
+var labelSuffix = winLen <= 1 ? " (Monat)" : " (" + winLen + " Monate)";
 var einV = kzPeriodValue(d.einnahmen, "sum");
 var ztkV = kzPeriodValue(d.zahlungszielKunden, "avg");
 var sonstV = kzPeriodValue(d.sonstigeErtraege, "sum");
@@ -749,10 +801,10 @@ kzMetricRow("Sonstige Ausgaben", kzFmt(sonAusV.cur), kzSubTrendHTML(sonAusV.cur,
 );
 var gewV = kzPeriodValue(d.gewinn, "sum");
 var margeCur = einV.cur ? (gewV.cur / einV.cur) * 100 : 0;
-var margePrev = einV.prev ? (gewV.prev / einV.prev) * 100 : 0;
-var periodMonths = kennzahlenPeriod === "month" ? 1 : (kennzahlenPeriod === "3m" ? 3 : 6);
-var liqCur = accountsTotal / (ausV.cur / periodMonths);
-var liqPrev = (kennzahlenPeriod !== "6m" && ausV.prev) ? accountsTotal / (ausV.prev / periodMonths) : null;
+var margePrev = (einV.prev && gewV.prev !== null && gewV.prev !== undefined) ? (gewV.prev / einV.prev) * 100 : null;
+var periodMonths = winLen || 1;
+var liqCur = ausV.cur ? accountsTotal / (ausV.cur / periodMonths) : 0;
+var liqPrev = ausV.prev ? accountsTotal / (ausV.prev / periodMonths) : null;
 var gewinnHTML = kzColumn(
 "#4f5bd5", "Gewinn", "Gewinn · " + subtitleSuffix,
 kzChartHTML(d.gewinn, "#4f5bd5", "#c9d0f5") +
@@ -766,8 +818,10 @@ kzMetricRow("Gewinnmarge", Math.round(margeCur) + " %", kzSubTrendHTML(margeCur,
 kzMetricRow("Liquiditätsreichweite", liqCur.toLocaleString("de-DE", { maximumFractionDigits: 1 }) + " Mon.", kzSubTrendHTML(liqCur, liqPrev, "abs", ""),
 "Wie lange dein Geld bei gleichbleibenden Ausgaben reicht. Berechnung: Verfügbare Liquidität ÷ durchschnittliche Monatsausgaben.")
 );
-var tabOrder = ["month", "3m", "6m"];
-var tabLabels = { month: "Aktueller Monat", "3m": "3 Monate", "6m": "6 Monate" };
+var tabOrder = ["month"];
+if (len3 > 1) tabOrder.push("3m");
+if (len6 > len3) tabOrder.push("6m");
+var tabLabels = { month: "Aktueller Monat", "3m": len3 + " Monate", "6m": len6 + " Monate" };
 var tabsHTML = tabOrder.map(function(t) {
 var active = t === kennzahlenPeriod;
 return "<button data-kz-period='" + t + "' style='padding:7px 13px;border-radius:7px;border:none;font-size:12.5px;font-weight:600;font-family:inherit;cursor:pointer;background:" + (active ? "#1e2a38" : "transparent") + ";color:" + (active ? "#fff" : "#5b6776") + "'>" + tabLabels[t] + "</button>";
@@ -776,7 +830,7 @@ container.innerHTML =
 "<style>.kz-info-wrap{position:relative;display:inline-flex}.kz-info-wrap .kz-tooltip{display:none;position:absolute;top:34px;right:0;width:230px;background:#1e2a38;color:#fff;font-size:12px;font-weight:500;line-height:1.5;padding:12px 14px;border-radius:11px;box-shadow:0 12px 32px rgba(16,30,50,0.24);z-index:30;text-align:left;pointer-events:none}.kz-info-wrap:hover .kz-tooltip{display:block}</style>" +
 "<div style='display:flex;flex-direction:column;font-family:Inter,system-ui,sans-serif'>" +
 "<div style='display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:12px'>" +
-"<h1 style='margin:0;font-size:25px;font-weight:700;letter-spacing:-0.02em;color:#1e2a38'>Kennzahlen <span style='font-size:15px;font-weight:500;color:#9aa6b2'>· Juni 2026</span></h1>" +
+"<h1 style='margin:0;font-size:25px;font-weight:700;letter-spacing:-0.02em;color:#1e2a38'>Kennzahlen <span style='font-size:15px;font-weight:500;color:#9aa6b2'>· " + kzMonthLabel(nMonths - 1, true) + "</span></h1>" +
 "<div style='display:flex;gap:4px;background:#eef1f4;padding:4px;border-radius:9px'>" + tabsHTML + "</div>" +
 "</div>" +
 "<div style='display:grid;grid-template-columns:repeat(3,1fr);gap:18px;align-items:start'>" + einnahmenHTML + ausgabenHTML + gewinnHTML + "</div>" +
@@ -788,6 +842,7 @@ kennzahlenPeriod = btn.getAttribute("data-kz-period");
 renderKennzahlen();
 });
 });
+kzDrawSparklines();
 }
 function renderUmsatzCard() {
 var valueEl = document.getElementById("kpiBurnRateValue");
@@ -796,11 +851,11 @@ if (!valueEl) return;
 var arr = kennzahlenData.einnahmen;
 var n = arr.length;
 var cur = arr[n - 1];
-var prev = arr[n - 2];
+var prev = n >= 2 ? arr[n - 2] : null;
 valueEl.textContent = kzFmt(cur);
 if (subEl) {
-var pct = prev ? ((cur - prev) / Math.abs(prev)) * 100 : 0;
-subEl.innerHTML = kzTrend(pct, " %", false) + " vs. Vormonat";
+if (!prev) { subEl.innerHTML = "<span style='color:#8a96a3'>Kein Vormonat</span>"; }
+else { subEl.innerHTML = kzTrend(((cur - prev) / Math.abs(prev)) * 100, " %", false) + " vs. Vormonat"; }
 }
 }
 
