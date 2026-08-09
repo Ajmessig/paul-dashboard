@@ -882,12 +882,15 @@ var year = (n && d.years) ? d.years[n - 1] : null;
 var mi = pgMonthOrder.indexOf(startKey);
 if (mi < 0) mi = new Date().getMonth();
 var cur = accountsTotal;
-var pts = [{ key: startKey, year: year, liq: cur, delta: null, isNow: true }];
+// Startmonat = echte Werte aus den Kennzahlen, die Folgemonate sind fortgeschrieben
+var lastInc = n ? (d.einnahmen[n - 1] + d.sonstigeErtraege[n - 1]) : inc;
+var lastExp = n ? d.ausgaben[n - 1] : exp;
+var pts = [{ key: startKey, year: year, liq: cur, delta: null, inc: lastInc, exp: lastExp, isNow: true }];
 for (var i = 0; i < prognoseSettings.horizonMonths; i++) {
 mi += 1;
 if (mi > 11) { mi = 0; if (year) year += 1; }
 cur += inc - exp;
-pts.push({ key: pgMonthOrder[mi], year: year, liq: cur, delta: inc - exp, isNow: false });
+pts.push({ key: pgMonthOrder[mi], year: year, liq: cur, delta: inc - exp, inc: inc, exp: exp, isNow: false });
 }
 return { points: pts, inc: inc, exp: exp, base: b, scenario: sc };
 }
@@ -896,6 +899,25 @@ function pgLowest(pts) {
 var low = pts[1] || pts[0];
 for (var i = 2; i < pts.length; i++) { if (pts[i].liq < low.liq) low = pts[i]; }
 return low;
+}
+// Achsenschritt auf einen "runden" Wert bringen (1/2/2,5/5 x 10^n)
+function pgNiceStep(raw) {
+if (!(raw > 0)) return 1;
+var mag = Math.pow(10, Math.floor(Math.log(raw) / Math.LN10));
+var norm = raw / mag;
+var step = norm <= 1 ? 1 : (norm <= 2 ? 2 : (norm <= 2.5 ? 2.5 : (norm <= 5 ? 5 : 10)));
+return step * mag;
+}
+function pgAxisFmt(v) {
+return Math.round(v).toLocaleString("de-DE") + " €";
+}
+function pgLegendItem(color, label, kind) {
+var swatch = kind === "line"
+? "<span style='width:17px;height:0;border-top:2.5px solid " + color + ";display:inline-block'></span>"
+: (kind === "dash"
+? "<span style='width:17px;height:0;border-top:2px dashed " + color + ";display:inline-block'></span>"
+: "<span style='width:11px;height:11px;border-radius:3px;background:" + color + ";display:inline-block'></span>");
+return "<span style='display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:600;color:#5b6776'>" + swatch + label + "</span>";
 }
 // Chart wird erst nach dem Rendern gezeichnet, damit die echte Containerbreite bekannt ist
 function pgDrawChart() {
@@ -906,22 +928,56 @@ if (!w) return;
 var s = pgSeries();
 var pts = s.points, n = pts.length;
 var reserve = prognoseSettings.mindestreserve;
-var h = 250, padL = 8, padR = 8, padT = 34, padB = 30;
+var lineColor = "#2f80ed", incColor = "#1f9d6b", expColor = "#e0533d";
+var h = 300, padL = 70, padR = 16, padT = 18, padB = 30;
 var innerW = w - padL - padR, innerH = h - padT - padB;
-var vals = pts.map(function(p) { return p.liq; }).concat([reserve]);
-var minV = Math.min.apply(null, vals), maxV = Math.max.apply(null, vals);
-var span = (maxV - minV) || Math.max(Math.abs(maxV), 1);
-minV -= span * 0.2; maxV += span * 0.2;
+if (innerW < 40) { padL = 44; innerW = w - padL - padR; }
+if (innerW < 20) return;
+// Gemeinsame Skala für Balken und Linie – die Nulllinie gehört dazu, sonst schweben die Balken
+var maxV = reserve, minV = 0;
+pts.forEach(function(p) {
+maxV = Math.max(maxV, p.liq, p.inc, p.exp);
+minV = Math.min(minV, p.liq);
+});
+maxV = maxV * 1.08;
+var step = pgNiceStep((maxV - minV) / 5);
+minV = Math.floor(minV / step) * step;
+maxV = Math.ceil(maxV / step) * step;
 var range = (maxV - minV) || 1;
-function X(i) { return n === 1 ? padL + innerW / 2 : padL + innerW * i / (n - 1); }
+var tickCount = Math.round((maxV - minV) / step);
+function X(i) { return padL + innerW * (i + 0.5) / n; }
 function Y(v) { return padT + (1 - (v - minV) / range) * innerH; }
+// Raster + Beschriftung der Y-Achse
+var grid = "", axis = "";
+for (var t = 0; t <= tickCount; t++) {
+var tv = minV + t * step;
+var gy = Y(tv);
+grid += "<line x1='" + padL + "' y1='" + gy.toFixed(1) + "' x2='" + (w - padR) + "' y2='" + gy.toFixed(1) +
+"' stroke='" + (Math.abs(tv) < 0.5 ? "#dbe2ea" : "#f0f3f6") + "' stroke-width='1'></line>";
+axis += "<text x='" + (padL - 10) + "' y='" + (gy + 4).toFixed(1) + "' text-anchor='end' font-size='11' font-weight='500' fill='#9aa6b2'>" + pgAxisFmt(tv) + "</text>";
+}
+// Balken: Einnahmen und Ausgaben je Monat, Prognosemonate etwas heller
+var band = innerW / n;
+var barW = Math.max(4, Math.min(16, band * 0.26));
+var y0 = Y(0);
+var bars = pts.map(function(p, i) {
+var cx = X(i);
+var op = p.isNow ? "1" : "0.55";
+var mLabel = pgMonthName(p.key) + (p.isNow ? "" : " (Prognose)");
+function bar(val, color, bx, name) {
+var yv = Y(val), bh = Math.max(1, y0 - yv);
+return "<rect class='kz-point' data-month=\"" + name + " · " + mLabel + "\" data-value=\"" + pgFmt(val) + "\" x='" + bx.toFixed(1) +
+"' y='" + yv.toFixed(1) + "' width='" + barW.toFixed(1) + "' height='" + bh.toFixed(1) +
+"' rx='2' fill='" + color + "' opacity='" + op + "' style='cursor:pointer'></rect>";
+}
+return bar(p.inc, incColor, cx - barW - 1.5, "Einnahmen") + bar(p.exp, expColor, cx + 1.5, "Ausgaben");
+}).join("");
 var low = pgLowest(pts);
 var below = low.liq < reserve;
-var lineColor = "#1f9d6b";
 var coords = pts.map(function(p, i) { return { x: X(i), y: Y(p.liq) }; });
 var pathD = "M" + coords.map(function(c) { return c.x.toFixed(1) + "," + c.y.toFixed(1); }).join(" L");
-var areaD = pathD + " L" + coords[n - 1].x.toFixed(1) + "," + (h - padB).toFixed(1) +
-" L" + coords[0].x.toFixed(1) + "," + (h - padB).toFixed(1) + " Z";
+var areaD = pathD + " L" + coords[n - 1].x.toFixed(1) + "," + y0.toFixed(1) +
+" L" + coords[0].x.toFixed(1) + "," + y0.toFixed(1) + " Z";
 var yr = Y(reserve);
 var circles = pts.map(function(p, i) {
 var c = coords[i];
@@ -934,25 +990,32 @@ dot = "<circle cx='" + c.x.toFixed(1) + "' cy='" + c.y.toFixed(1) + "' r='4.5' f
 } else {
 dot = "<circle cx='" + c.x.toFixed(1) + "' cy='" + c.y.toFixed(1) + "' r='3.5' fill='#fff' stroke='" + lineColor + "' stroke-width='2' style='pointer-events:none'></circle>";
 }
-var label = pgMonthName(p.key) + (p.year ? " " + p.year : "");
-var hit = "<circle class='kz-point' data-month=\"" + label + "\" data-value=\"" + pgFmt(p.liq) + "\" cx='" + c.x.toFixed(1) + "' cy='" + c.y.toFixed(1) + "' r='13' fill='transparent' style='cursor:pointer'></circle>";
+var label = "Liquidität · " + pgMonthName(p.key) + (p.year ? " " + p.year : "");
+var hit = "<circle class='kz-point' data-month=\"" + label + "\" data-value=\"" + pgFmt(p.liq) + "\" cx='" + c.x.toFixed(1) + "' cy='" + c.y.toFixed(1) + "' r='12' fill='transparent' style='cursor:pointer'></circle>";
 return dot + hit;
 }).join("");
 var labels = pts.map(function(p, i) {
-var anchor = i === 0 ? "start" : (i === n - 1 ? "end" : "middle");
 var txt = p.key + (p.isNow ? " · jetzt" : "");
 var weight = p.isNow ? "700" : "600";
 var fill = p.isNow ? "#1e2a38" : "#8a96a3";
-return "<text x='" + X(i).toFixed(1) + "' y='" + (h - 9) + "' text-anchor='" + anchor + "' font-size='11.5' font-weight='" + weight + "' fill='" + fill + "'>" + txt + "</text>";
+return "<text x='" + X(i).toFixed(1) + "' y='" + (h - 9) + "' text-anchor='middle' font-size='11.5' font-weight='" + weight + "' fill='" + fill + "'>" + txt + "</text>";
 }).join("");
+// Der Wert steht in der Legende – im Chart würde die Beschriftung mit den Balken kollidieren
 var reserveLine =
-"<line x1='" + padL + "' y1='" + yr.toFixed(1) + "' x2='" + (w - padR) + "' y2='" + yr.toFixed(1) + "' stroke='#e07b00' stroke-width='1.25' stroke-dasharray='5 5' opacity='0.8'></line>" +
-"<text x='" + (w - padR) + "' y='" + (yr - 8).toFixed(1) + "' text-anchor='end' font-size='11.5' font-weight='700' fill='#e07b00'>Mindestreserve " + pgFmt(reserve) + "</text>";
-node.innerHTML =
+"<line x1='" + padL + "' y1='" + yr.toFixed(1) + "' x2='" + (w - padR) + "' y2='" + yr.toFixed(1) + "' stroke='#e07b00' stroke-width='1.25' stroke-dasharray='5 5' opacity='0.85'></line>";
+var legend =
+"<div style='display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:18px;margin-bottom:6px'>" +
+pgLegendItem(incColor, "Einnahmen", "box") +
+pgLegendItem(expColor, "Ausgaben", "box") +
+pgLegendItem(lineColor, "Liquidität", "line") +
+pgLegendItem("#e07b00", "Mindestreserve " + pgFmt(reserve), "dash") +
+"<span style='font-size:11.5px;color:#9aa6b2'>helle Balken = Prognose</span></div>";
+node.innerHTML = legend +
 "<svg width='" + w + "' height='" + h + "' viewBox='0 0 " + w + " " + h + "' style='display:block;overflow:visible'>" +
 "<defs><linearGradient id='pggrad' x1='0' y1='0' x2='0' y2='1'>" +
-"<stop offset='0%' stop-color='" + lineColor + "' stop-opacity='0.18'></stop>" +
+"<stop offset='0%' stop-color='" + lineColor + "' stop-opacity='0.16'></stop>" +
 "<stop offset='100%' stop-color='" + lineColor + "' stop-opacity='0'></stop></linearGradient></defs>" +
+grid + axis + bars +
 "<path d='" + areaD + "' fill='url(#pggrad)'></path>" +
 reserveLine +
 "<path d='" + pathD + "' fill='none' stroke='" + lineColor + "' stroke-width='2.5' stroke-linejoin='round' stroke-linecap='round'></path>" +
@@ -1050,7 +1113,7 @@ container.innerHTML =
 "</div>" +
 "<div style='background:#fff;border:1px solid #e7ebef;border-radius:14px;padding:18px 20px;box-shadow:0 1px 2px rgba(16,30,50,0.04);margin-bottom:16px'>" +
 alertHTML +
-"<div id='prognoseChart' style='width:100%;height:250px'></div>" +
+"<div id='prognoseChart' style='width:100%;min-height:300px'></div>" +
 "</div>" +
 "<div style='display:grid;grid-template-columns:1.55fr 1fr;gap:16px;align-items:start'>" + tableHTML + annahmenHTML + "</div>" +
 "</div>";
