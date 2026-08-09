@@ -4,7 +4,7 @@
 // Single source of truth: edit here, commit, tag, bump the src URL.
 // ============================================================
 
-document.addEventListener("DOMContentLoaded", () => {
+function paulBoot() {
 
 // ===== OFFENE POSTEN - filter bar & modal field HTML injection =====
 const filterBar = document.getElementById("filterBarContainer");
@@ -899,5 +899,15 @@ result.push({name:name,number:number||"—",amount:amount,type:type,dueDate:dueD
 }
 return result;
 }
-});
+}
+
+// Startet sofort, wenn das DOM schon geladen ist – sonst nach DOMContentLoaded.
+// Nötig, weil das Skript asynchron nachgeladen wird und das Event
+// sonst bereits gefeuert haben kann, bevor der Listener existiert.
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", paulBoot);
+} else {
+  paulBoot();
+}
+
 
