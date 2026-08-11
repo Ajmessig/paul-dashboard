@@ -93,49 +93,6 @@ if (liquiditySubEl) {
 liquiditySubEl.textContent = "über " + accounts.length + " Konten";
 }
 
-// ===== UEBERSICHT - main liquidity chart (Chart.js) =====
-const months = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun"];
-const income =   [12000, 15000, 13000, 17000, 16000, 18000];
-const expenses = [8000,  9000,  9500,  11000, 10000, 10500];
-function average(arr) { return arr.reduce((a, b) => a + b, 0) / arr.length; }
-const avgIncome = average(income);
-const avgExpenses = average(expenses);
-const futureMonths = ["Jul", "Aug", "Sep"];
-let liquidity = [];
-let current = accountsTotal;
-for (let i = 0; i < months.length; i++) {
-current += income[i] - expenses[i];
-liquidity.push(current);
-}
-for (let i = 0; i < futureMonths.length; i++) {
-current += avgIncome - avgExpenses;
-liquidity.push(current);
-}
-const allMonths = months.concat(futureMonths);
-const incomeExtended = income.concat([null, null, null]);
-const expensesExtended = expenses.concat([null, null, null]);
-const chartCanvas = document.getElementById("liquidityChart");
-if (chartCanvas) {
-const ctx = chartCanvas.getContext("2d");
-new Chart(ctx, {
-data: {
-labels: allMonths,
-datasets: [
-{ type: "bar", label: "Einnahmen", data: incomeExtended, backgroundColor: "#1f9d6b" },
-{ type: "bar", label: "Ausgaben", data: expensesExtended, backgroundColor: "#e0533d" },
-{ type: "line", label: "Liquidität", data: liquidity, borderColor: "#2f80ed", backgroundColor: "rgba(47,128,237,0.08)", borderWidth: 2, pointBackgroundColor: "#2f80ed", tension: 0.3, fill: true }
-]
-},
-options: {
-responsive: true, maintainAspectRatio: false,
-plugins: {
-tooltip: { callbacks: { label: ctx => ctx.parsed.y === null ? null : ctx.dataset.label + ": " + ctx.parsed.y.toLocaleString("de-DE") + " €" } },
-legend: { position: "top" }
-},
-scales: { y: { ticks: { callback: val => val.toLocaleString("de-DE") + " €" } } }
-}
-});
-}
 
 // ===== KONTEN - page render + sidebar accounts widget =====
 function renderKontenPage() {
@@ -522,7 +479,8 @@ return m + kennzahlenData.personalkosten[i] + kennzahlenData.sonstigeAusgaben[i]
 kennzahlenData.gewinn = kennzahlenData.einnahmen.map(function(e, i) {
 return e - kennzahlenData.ausgaben[i];
 });
-let kennzahlenPeriod = "month";
+// Zeitraum gilt global fuer Kennzahlen UND Uebersicht - "month" | "3m" | "6m"
+let kennzahlenPeriod = "6m";
 function kzFmt(n) {
 return Math.round(n).toLocaleString("de-DE") + " €";
 }
@@ -641,11 +599,18 @@ return kzWindowLen();
 }
 // Hauptchart der Kennzahlen - gleiche Bildsprache wie die Prognose, nur rueckwaerts gerichtet.
 // Wird erst nach dem Rendern gezeichnet, damit die echte Containerbreite bekannt ist.
+// Laufende Nummer fuer SVG-Gradient-IDs - jeder Container braucht eine eigene, sonst kollidieren die defs
+var paulGradSeq = 0;
+// Zeichnet in JEDEN Container mit data-paul-chart="kz" - Kennzahlen-Seite und Uebersicht teilen sich dieselbe Funktion
 function kzDrawMainChart() {
-var node = document.getElementById("kzChart");
+var nodes = document.querySelectorAll("[data-paul-chart='kz']");
+for (var ni = 0; ni < nodes.length; ni++) kzDrawChartInto(nodes[ni]);
+}
+function kzDrawChartInto(node) {
 if (!node) return;
 var w = Math.round(node.getBoundingClientRect().width);
 if (!w) return;
+var gid = node.__paulGrad || (node.__paulGrad = "kzgrad" + (++paulGradSeq));
 var d = kennzahlenData, n = d.months.length, len = kzChartLen();
 if (!n || !len) { node.innerHTML = ""; return; }
 var pts = [];
@@ -741,11 +706,11 @@ pgLegendItem(avgColor, "\u00d8 Gewinn " + kzFmt(avgGew), "dash") +
 "</div>";
 node.innerHTML = legend +
 "<svg width='" + w + "' height='" + h + "' viewBox='0 0 " + w + " " + h + "' style='display:block;overflow:visible'>" +
-"<defs><linearGradient id='kzgrad' x1='0' y1='0' x2='0' y2='1'>" +
+"<defs><linearGradient id='" + gid + "' x1='0' y1='0' x2='0' y2='1'>" +
 "<stop offset='0%' stop-color='" + lineColor + "' stop-opacity='0.16'></stop>" +
 "<stop offset='100%' stop-color='" + lineColor + "' stop-opacity='0'></stop></linearGradient></defs>" +
 grid + axis + bars +
-"<path d='" + areaD + "' fill='url(#kzgrad)' style='pointer-events:none'></path>" +
+"<path d='" + areaD + "' fill='url(#" + gid + ")' style='pointer-events:none'></path>" +
 avgLine +
 "<path d='" + pathD + "' fill='none' stroke='" + lineColor + "' stroke-width='2.5' stroke-linejoin='round' stroke-linecap='round' style='pointer-events:none'></path>" +
 circles + labels + "</svg>";
@@ -755,6 +720,19 @@ window.addEventListener("resize", function() {
 clearTimeout(kzResizeTimer);
 kzResizeTimer = setTimeout(kzDrawMainChart, 120);
 });
+// Zeitraum-Tabs - werden auf der Kennzahlen-Seite und in der Uebersicht identisch verwendet
+function kzPeriodTabsHTML() {
+var n = kennzahlenData.months.length;
+var len3 = Math.min(3, n), len6 = Math.min(6, n);
+var order = ["month"];
+if (len3 > 1) order.push("3m");
+if (len6 > len3) order.push("6m");
+var labels = { month: "Aktueller Monat", "3m": len3 + " Monate", "6m": len6 + " Monate" };
+return order.map(function(t) {
+var active = t === kennzahlenPeriod;
+return "<button data-kz-period='" + t + "' style='padding:7px 13px;border-radius:7px;border:none;font-size:12.5px;font-weight:600;font-family:inherit;cursor:pointer;background:" + (active ? "#1e2a38" : "transparent") + ";color:" + (active ? "#fff" : "#5b6776") + "'>" + labels[t] + "</button>";
+}).join("");
+}
 function renderKennzahlen() {
 var container = document.getElementById("kennzahlenContainer");
 if (!container) return;
@@ -811,14 +789,7 @@ kzMetricRow("Gewinnmarge", Math.round(margeCur) + " %", kzSubTrendHTML(margeCur,
 kzMetricRow("Liquiditätsreichweite", liqCur.toLocaleString("de-DE", { maximumFractionDigits: 1 }) + " Mon.", kzSubTrendHTML(liqCur, liqPrev, "abs", ""),
 "Wie lange dein Geld bei gleichbleibenden Ausgaben reicht. Berechnung: Verfügbare Liquidität ÷ durchschnittliche Monatsausgaben.")
 );
-var tabOrder = ["month"];
-if (len3 > 1) tabOrder.push("3m");
-if (len6 > len3) tabOrder.push("6m");
-var tabLabels = { month: "Aktueller Monat", "3m": len3 + " Monate", "6m": len6 + " Monate" };
-var tabsHTML = tabOrder.map(function(t) {
-var active = t === kennzahlenPeriod;
-return "<button data-kz-period='" + t + "' style='padding:7px 13px;border-radius:7px;border:none;font-size:12.5px;font-weight:600;font-family:inherit;cursor:pointer;background:" + (active ? "#1e2a38" : "transparent") + ";color:" + (active ? "#fff" : "#5b6776") + "'>" + tabLabels[t] + "</button>";
-}).join("");
+var tabsHTML = kzPeriodTabsHTML();
 container.innerHTML =
 "<style>.kz-info-wrap{position:relative;display:inline-flex}.kz-info-wrap .kz-tooltip{display:none;position:absolute;top:34px;right:0;width:230px;background:#1e2a38;color:#fff;font-size:12px;font-weight:500;line-height:1.5;padding:12px 14px;border-radius:11px;box-shadow:0 12px 32px rgba(16,30,50,0.24);z-index:30;text-align:left;pointer-events:none}.kz-info-wrap:hover .kz-tooltip{display:block}</style>" +
 "<div style='display:flex;flex-direction:column;font-family:Inter,system-ui,sans-serif'>" +
@@ -827,15 +798,9 @@ container.innerHTML =
 "<div style='display:flex;gap:4px;background:#eef1f4;padding:4px;border-radius:9px'>" + tabsHTML + "</div>" +
 "</div>" +
 "<div style='background:#fff;border:1px solid #e7ebef;border-radius:14px;padding:18px 20px 12px;box-shadow:0 1px 2px rgba(16,30,50,0.04);margin-bottom:18px'>" +
-"<div id='kzChart'></div></div>" +
+"<div id='kzChart' data-paul-chart='kz'></div></div>" +
 "<div style='display:grid;grid-template-columns:repeat(3,1fr);gap:18px;align-items:start'>" + einnahmenHTML + ausgabenHTML + gewinnHTML + "</div>" +
 "</div>";
-container.querySelectorAll("[data-kz-period]").forEach(function(btn) {
-btn.addEventListener("click", function() {
-kennzahlenPeriod = btn.getAttribute("data-kz-period");
-renderKennzahlen();
-});
-});
 kzDrawMainChart();
 }
 function renderUmsatzCard() {
@@ -1060,11 +1025,16 @@ var swatch = kind === "line"
 return "<span style='display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:600;color:#5b6776'>" + swatch + label + "</span>";
 }
 // Chart wird erst nach dem Rendern gezeichnet, damit die echte Containerbreite bekannt ist
+// Zeichnet in JEDEN Container mit data-paul-chart="pg" - Prognose-Seite und Uebersicht teilen sich dieselbe Funktion
 function pgDrawChart() {
-var node = document.getElementById("prognoseChart");
+var nodes = document.querySelectorAll("[data-paul-chart='pg']");
+for (var ni = 0; ni < nodes.length; ni++) pgDrawChartInto(nodes[ni]);
+}
+function pgDrawChartInto(node) {
 if (!node) return;
 var w = Math.round(node.getBoundingClientRect().width);
 if (!w) return;
+var gid = node.__paulGrad || (node.__paulGrad = "pggrad" + (++paulGradSeq));
 var s = pgSeries();
 var pts = s.points, n = pts.length;
 var reserve = prognoseSettings.mindestreserve;
@@ -1162,11 +1132,11 @@ pgLegendItem("#e07b00", "Mindestreserve " + pgFmt(reserve), "dash") +
 "<span style='font-size:11.5px;color:#9aa6b2'>helle Balken = Prognose</span></div>";
 node.innerHTML = legend +
 "<svg width='" + w + "' height='" + h + "' viewBox='0 0 " + w + " " + h + "' style='display:block;overflow:visible'>" +
-"<defs><linearGradient id='pggrad' x1='0' y1='0' x2='0' y2='1'>" +
+"<defs><linearGradient id='" + gid + "' x1='0' y1='0' x2='0' y2='1'>" +
 "<stop offset='0%' stop-color='" + lineColor + "' stop-opacity='0.16'></stop>" +
 "<stop offset='100%' stop-color='" + lineColor + "' stop-opacity='0'></stop></linearGradient></defs>" +
 grid + axis + bars +
-"<path d='" + areaD + "' fill='url(#pggrad)' style='pointer-events:none'></path>" +
+"<path d='" + areaD + "' fill='url(#" + gid + ")' style='pointer-events:none'></path>" +
 reserveLine +
 "<path d='" + pathD + "' fill='none' stroke='" + lineColor + "' stroke-width='2.5' stroke-linejoin='round' stroke-linecap='round' style='pointer-events:none'></path>" +
 circles + labels + "</svg>";
@@ -1175,6 +1145,14 @@ function pgRow(label, value, valueColor, bold) {
 return "<div style='display:flex;justify-content:space-between;align-items:center;gap:14px;padding:11px 0;border-top:1px solid #f0f3f6'>" +
 "<span style='font-size:13px;color:#5b6776;font-weight:500'>" + label + "</span>" +
 "<span style='font-size:13px;font-weight:" + (bold ? "700" : "600") + ";font-variant-numeric:tabular-nums;color:" + (valueColor || "#1e2a38") + ";white-space:nowrap'>" + value + "</span></div>";
+}
+// Szenario-Tabs - werden auf der Prognose-Seite und in der Uebersicht identisch verwendet
+function pgScenarioTabsHTML() {
+return prognoseOrder.map(function(k) {
+var active = k === prognoseScenario;
+return "<button data-pg-scenario='" + k + "' style='padding:8px 18px;border-radius:8px;border:none;font-size:13px;font-weight:600;font-family:inherit;cursor:pointer;background:" +
+(active ? "#1e2a38" : "transparent") + ";color:" + (active ? "#fff" : "#5b6776") + "'>" + prognoseScenarios[k].label + "</button>";
+}).join("");
 }
 function renderPrognose() {
 var container = document.getElementById("prognoseContainer");
@@ -1200,11 +1178,7 @@ alertHTML +=
 "<span style='flex:none;width:9px'></span><span>Im " + lowLabel + " fehlen dir <b style='color:#c62828'>" + pgFmt(gap) + "</b> bis zur Mindestreserve. " +
 "Hol offene Forderungen früher rein, verschiebe größere Anschaffungen oder sprich rechtzeitig mit deiner Bank.</span></div>";
 }
-var tabsHTML = prognoseOrder.map(function(k) {
-var active = k === prognoseScenario;
-return "<button data-pg-scenario='" + k + "' style='padding:8px 18px;border-radius:8px;border:none;font-size:13px;font-weight:600;font-family:inherit;cursor:pointer;background:" +
-(active ? "#1e2a38" : "transparent") + ";color:" + (active ? "#fff" : "#5b6776") + "'>" + prognoseScenarios[k].label + "</button>";
-}).join("");
+var tabsHTML = pgScenarioTabsHTML();
 var rowsHTML = pts.map(function(p) {
 var under = p.liq < reserve;
 var liqColor = under ? "#c62828" : "#1e2a38";
@@ -1287,16 +1261,10 @@ container.innerHTML =
 "</div>" +
 "<div style='background:#fff;border:1px solid #e7ebef;border-radius:14px;padding:18px 20px;box-shadow:0 1px 2px rgba(16,30,50,0.04);margin-bottom:16px'>" +
 alertHTML +
-"<div id='prognoseChart' style='width:100%;min-height:300px'></div>" +
+"<div id='prognoseChart' data-paul-chart='pg' style='width:100%;min-height:300px'></div>" +
 "</div>" +
 "<div style='display:grid;grid-template-columns:1.55fr 1fr;gap:16px;align-items:start'>" + tableHTML + annahmenHTML + "</div>" +
 "</div>";
-container.querySelectorAll("[data-pg-scenario]").forEach(function(btn) {
-btn.addEventListener("click", function() {
-prognoseScenario = btn.getAttribute("data-pg-scenario");
-renderPrognose();
-});
-});
 pgDrawChart();
 }
 var pgResizeTimer = null;
@@ -1305,9 +1273,58 @@ clearTimeout(pgResizeTimer);
 pgResizeTimer = setTimeout(pgDrawChart, 120);
 });
 
+// ===== UEBERSICHT - Kennzahlen- und Prognose-Chart spiegeln =====
+// Beide Charts kommen aus denselben Funktionen wie auf den Unterseiten (kzDrawMainChart / pgDrawChart).
+// Aendert sich dort etwas, aendert es sich hier automatisch mit - es gibt keine zweite Chart-Logik.
+function renderUebersichtCharts() {
+var card = document.getElementById("uebersichtCharts");
+if (!card) return;
+var szenario = prognoseScenarios[prognoseScenario] ? prognoseScenarios[prognoseScenario].label : "";
+card.innerHTML =
+"<div style='font-family:Inter,system-ui,sans-serif;color:#1e2a38'>" +
+"<div style='display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px'>" +
+"<div><div style='font-size:15.5px;font-weight:700;letter-spacing:-0.01em'>Einnahmen, Ausgaben und Gewinn</div>" +
+"<div style='font-size:12px;color:#8a96a3;margin-top:3px'>" + kzPeriodLabel() + "</div></div>" +
+"<div style='display:flex;gap:4px;background:#eef1f4;padding:4px;border-radius:9px'>" + kzPeriodTabsHTML() + "</div>" +
+"</div>" +
+"<div data-paul-chart='kz'></div>" +
+"<div style='height:1px;background:#f0f3f6;margin:24px 0 18px'></div>" +
+"<div style='display:flex;align-items:flex-end;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:14px'>" +
+"<div><div style='font-size:15.5px;font-weight:700;letter-spacing:-0.01em'>Liquiditätsprognose</div>" +
+"<div style='font-size:12px;color:#8a96a3;margin-top:3px'>nächste " + prognoseSettings.horizonMonths + " Monate · Szenario " + szenario + "</div></div>" +
+"<div style='display:flex;gap:4px;background:#eef1f4;padding:4px;border-radius:9px'>" + pgScenarioTabsHTML() + "</div>" +
+"</div>" +
+"<div data-paul-chart='pg' style='width:100%;min-height:300px'></div>" +
+"</div>";
+kzDrawMainChart();
+pgDrawChart();
+}
+// Zeitraum und Szenario sind global: ein Klick auf einen Tab wirkt auf allen Seiten gleichzeitig.
+// Deshalb laeuft die Tab-Steuerung ueber einen einzigen delegierten Listener statt pro Container.
+function paulSyncViews() {
+renderKennzahlen();
+renderPrognose();
+renderUebersichtCharts();
+}
+document.addEventListener("click", function(e) {
+if (!e.target || !e.target.closest) return;
+var kzBtn = e.target.closest("[data-kz-period]");
+if (kzBtn) {
+kennzahlenPeriod = kzBtn.getAttribute("data-kz-period");
+paulSyncViews();
+return;
+}
+var pgBtn = e.target.closest("[data-pg-scenario]");
+if (pgBtn) {
+prognoseScenario = pgBtn.getAttribute("data-pg-scenario");
+paulSyncViews();
+}
+});
+
 // ===== INIT CALLS + CSV UPLOAD =====
 renderKennzahlen();
 renderPrognose();
+renderUebersichtCharts();
 renderPositions(getFilters());
 setTimeout(function() { renderOposSummary(); }, 300);
 var csvInput = document.createElement("input");
@@ -1324,6 +1341,7 @@ if (parsed.length === 0) { alert("Die CSV-Datei enthält keine gültigen Einträ
 parsed.forEach(function(p) { positions.push(p); });
 renderPositions(getFilters());
 renderPrognose();
+renderUebersichtCharts();
 alert(parsed.length + " Positionen aus CSV importiert.");
 };
 reader.readAsText(file, "UTF-8"); csvInput.value = "";
