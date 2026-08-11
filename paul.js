@@ -1321,9 +1321,227 @@ paulSyncViews();
 }
 });
 
+// ===== EINSTELLUNGEN - Unternehmensdaten & Mindestreserve =====
+// PLACEHOLDER: Firmenstammdaten kommen später aus dem Nutzerkonto bzw. der API.
+// Solange es kein Backend gibt, werden Änderungen im localStorage des Browsers gehalten.
+var unternehmenData = {
+firma:       "Vogt Elektrotechnik GmbH",
+gewerk:      "Elektroinstallation",
+mitarbeiter: 5,
+standort:    "88131 Lindau"
+};
+var ES_KEY = "paul.einstellungen.v1";
+var esFields = [
+{ key: "firma",       label: "Firma",       type: "text",   placeholder: "Firmenname",              required: true  },
+{ key: "gewerk",      label: "Gewerk",      type: "text",   placeholder: "z. B. Elektroinstallation", required: false },
+{ key: "mitarbeiter", label: "Mitarbeiter", type: "number", placeholder: "0",                       required: false },
+{ key: "standort",    label: "Standort",    type: "text",   placeholder: "PLZ und Ort",             required: false }
+];
+function esEsc(v) {
+return String(v).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function esWrite() {
+// Kein Backend: fehlschlagender Speicherzugriff (Privat-Modus, blockierte Cookies) darf die App nicht stoppen.
+try {
+localStorage.setItem(ES_KEY, JSON.stringify({
+unternehmen:    unternehmenData,
+mindestreserve: prognoseSettings.mindestreserve
+}));
+} catch (e) {}
+}
+function esLoad() {
+var saved = null;
+try { var raw = localStorage.getItem(ES_KEY); if (raw) saved = JSON.parse(raw); } catch (e) { saved = null; }
+if (saved && saved.unternehmen) {
+esFields.forEach(function(f) {
+var v = saved.unternehmen[f.key];
+if (v !== undefined && v !== null) unternehmenData[f.key] = v;
+});
+}
+if (saved && typeof saved.mindestreserve === "number" && isFinite(saved.mindestreserve) && saved.mindestreserve >= 0) {
+prognoseSettings.mindestreserve = saved.mindestreserve;
+}
+esSyncSidebar();
+}
+// Firmenname und Reserve stehen auch in der Sidebar - beides muss sofort mitziehen.
+function esSyncSidebar() {
+var comp = document.querySelectorAll(".paul-company");
+for (var i = 0; i < comp.length; i++) comp[i].textContent = unternehmenData.firma;
+var res = document.querySelectorAll(".paul-reserve-value");
+for (var j = 0; j < res.length; j++) res[j].textContent = pgFmt(prognoseSettings.mindestreserve);
+}
+// Obergrenze des Sliders: rund drei Monatsausgaben, auf 5.000 € gerundet, mindestens 30.000 €.
+function esReserveMax() {
+var exp = pgBase().exp || 0;
+return Math.max(30000, Math.ceil((exp * 3) / 5000) * 5000);
+}
+function esReserveHint(v) {
+var exp = pgBase().exp || 0;
+if (!exp) return "Puffer, den PAUL nie unterschreiten soll.";
+var months = v / exp;
+return "entspricht rund " + months.toLocaleString("de-DE", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) +
+" Monatsausgaben (Ø " + pgFmt(exp) + " pro Monat)";
+}
+function esPaintRange(el) {
+var min = Number(el.min), max = Number(el.max), v = Number(el.value);
+var pct = max > min ? ((v - min) / (max - min)) * 100 : 0;
+el.style.background = "linear-gradient(90deg,#e07b00 0%,#e07b00 " + pct + "%,#eef1f4 " + pct + "%,#eef1f4 100%)";
+}
+var esSavedTimer = null, esSyncTimer = null;
+function renderEinstellungen() {
+var container = document.getElementById("einstellungenContainer");
+if (!container) return;
+var reserve = prognoseSettings.mindestreserve;
+var rMax = esReserveMax();
+if (reserve > rMax) rMax = Math.ceil(reserve / 5000) * 5000;
+
+var formHTML = esFields.map(function(f) {
+var extra = f.type === "number" ? " min='0' step='1'" : "";
+return "<label style='display:block;margin-bottom:12px'>" +
+"<span style='display:block;font-size:12px;font-weight:600;color:#8a96a3;margin-bottom:5px'>" + f.label + "</span>" +
+"<input class='es-input' id='es-" + f.key + "' type='" + f.type + "' value=\"" + esEsc(unternehmenData[f.key]) +
+"\" placeholder=\"" + esEsc(f.placeholder) + "\"" + extra + ">" +
+"</label>";
+}).join("");
+
+container.innerHTML =
+"<style>" +
+".es-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}" +
+"@media (max-width:900px){.es-grid{grid-template-columns:1fr}}" +
+".es-card{background:#fff;border:1px solid #e7ebef;border-radius:14px;padding:20px 22px;box-shadow:0 1px 2px rgba(16,30,50,0.04)}" +
+".es-input{width:100%;box-sizing:border-box;padding:9px 12px;border-radius:9px;border:1px solid #d6dde4;background:#f8fafb;" +
+"font-size:13.5px;font-family:inherit;color:#1e2a38;outline:none;transition:border-color .15s,background .15s}" +
+".es-input:focus{border-color:#1f9d6b;background:#fff}" +
+".es-btn{padding:9px 18px;border-radius:9px;border:none;background:#1f9d6b;color:#fff;font-size:13px;font-weight:600;" +
+"font-family:inherit;cursor:pointer;transition:background .15s}" +
+".es-btn:hover{background:#1a865b}" +
+".es-range{-webkit-appearance:none;appearance:none;width:100%;height:6px;border-radius:3px;background:#eef1f4;outline:none;margin:0;cursor:pointer}" +
+".es-range::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:18px;height:18px;border-radius:50%;background:#fff;" +
+"border:2px solid #e07b00;box-shadow:0 1px 3px rgba(16,30,50,0.25);cursor:pointer}" +
+".es-range::-moz-range-thumb{width:18px;height:18px;border-radius:50%;background:#fff;border:2px solid #e07b00;" +
+"box-shadow:0 1px 3px rgba(16,30,50,0.25);cursor:pointer;border-color:#e07b00}" +
+".es-range:focus-visible{box-shadow:0 0 0 3px rgba(224,123,0,0.18)}" +
+"</style>" +
+"<div style='font-family:Inter,system-ui,sans-serif;color:#1e2a38'>" +
+"<h1 style='margin:0;font-size:25px;font-weight:700;letter-spacing:-0.02em;color:#1e2a38'>Einstellungen</h1>" +
+"<div style='font-size:13px;color:#8a96a3;margin:4px 0 18px'>Stammdaten und Liquiditäts-Reserve</div>" +
+"<div class='es-grid'>" +
+
+// --- Karte 1: Unternehmen ---
+"<div class='es-card'>" +
+"<div style='font-size:14px;font-weight:700;margin-bottom:4px'>Unternehmen</div>" +
+"<div style='font-size:12.5px;color:#8a96a3;margin-bottom:16px;line-height:1.5'>Diese Angaben erscheinen in der Seitenleiste und in Auswertungen.</div>" +
+formHTML +
+"<div style='display:flex;align-items:center;gap:12px;margin-top:16px'>" +
+"<button type='button' class='es-btn' id='es-save'>Speichern</button>" +
+"<span id='es-saved' style='font-size:12.5px;font-weight:600;color:#1f9d6b;opacity:0;transition:opacity .2s'>Gespeichert ✓</span>" +
+"</div>" +
+"</div>" +
+
+// --- Karte 2: Liquiditäts-Reserve ---
+"<div class='es-card'>" +
+"<div style='font-size:14px;font-weight:700;margin-bottom:4px'>Liquiditäts-Reserve</div>" +
+"<div style='font-size:12.5px;color:#8a96a3;margin-bottom:16px;line-height:1.5'>PAUL warnt dich, sobald die Prognose unter diesen Betrag fällt.</div>" +
+"<div id='es-reserve-value' style='font-size:30px;font-weight:800;letter-spacing:-0.02em;font-variant-numeric:tabular-nums'>" + pgFmt(reserve) + "</div>" +
+"<div id='es-reserve-hint' style='font-size:12.5px;color:#8a96a3;margin-top:5px;line-height:1.5'>" + esReserveHint(reserve) + "</div>" +
+"<input class='es-range' id='es-reserve-range' type='range' min='0' max='" + rMax + "' step='500' value='" + reserve + "' style='margin-top:18px'>" +
+"<div style='display:flex;justify-content:space-between;font-size:11.5px;color:#9aa6b2;margin-top:7px'>" +
+"<span>0 €</span><span id='es-reserve-max'>" + pgFmt(rMax) + "</span></div>" +
+"<div style='display:flex;align-items:center;gap:10px;margin-top:18px;padding-top:16px;border-top:1px solid #f0f3f6'>" +
+"<span style='font-size:12px;font-weight:600;color:#8a96a3'>Genauer Wert</span>" +
+"<input class='es-input' id='es-reserve-input' type='number' min='0' step='100' value='" + reserve + "' style='width:130px'>" +
+"<span style='font-size:13px;color:#8a96a3'>€</span>" +
+"</div>" +
+"</div>" +
+
+"</div></div>";
+
+// ----- Unternehmensdaten speichern -----
+function esSaveCompany() {
+esFields.forEach(function(f) {
+var el = document.getElementById("es-" + f.key);
+if (!el) return;
+var v = String(el.value).trim();
+if (f.type === "number") {
+var n = parseInt(v, 10);
+unternehmenData[f.key] = (isNaN(n) || n < 0) ? 0 : n;
+el.value = String(unternehmenData[f.key]);
+} else if (f.required && v === "") {
+el.value = unternehmenData[f.key];   // Pflichtfeld nicht leeren - alten Wert zurückschreiben
+} else {
+unternehmenData[f.key] = v;
+}
+});
+esWrite();
+esSyncSidebar();
+var note = document.getElementById("es-saved");
+if (note) {
+note.style.opacity = "1";
+clearTimeout(esSavedTimer);
+esSavedTimer = setTimeout(function() { note.style.opacity = "0"; }, 2200);
+}
+}
+var saveBtn = document.getElementById("es-save");
+if (saveBtn) saveBtn.addEventListener("click", esSaveCompany);
+esFields.forEach(function(f) {
+var el = document.getElementById("es-" + f.key);
+if (el) el.addEventListener("keydown", function(e) { if (e.key === "Enter") { e.preventDefault(); esSaveCompany(); } });
+});
+
+// ----- Mindestreserve -----
+var range  = document.getElementById("es-reserve-range");
+var num    = document.getElementById("es-reserve-input");
+var valEl  = document.getElementById("es-reserve-value");
+var hintEl = document.getElementById("es-reserve-hint");
+var maxEl  = document.getElementById("es-reserve-max");
+// source = welches Feld die Änderung ausgelöst hat. Dieses Feld wird NICHT zurückgeschrieben,
+// sonst springt der Cursor beim Tippen bzw. der Slider beim Ziehen.
+function esSetReserve(v, source) {
+if (!isFinite(v) || v < 0) v = 0;
+prognoseSettings.mindestreserve = v;
+if (valEl)  valEl.textContent = pgFmt(v);
+if (hintEl) hintEl.textContent = esReserveHint(v);
+if (range && source !== "range") {
+if (v > Number(range.max)) {
+range.max = String(Math.ceil(v / 5000) * 5000);
+if (maxEl) maxEl.textContent = pgFmt(Number(range.max));
+}
+range.value = String(v);
+}
+if (num && source !== "num") num.value = String(v);
+if (range) esPaintRange(range);
+esSyncSidebar();
+// Prognose und Übersicht sind teuer zu zeichnen - beim Ziehen gebündelt nachziehen.
+clearTimeout(esSyncTimer);
+esSyncTimer = setTimeout(function() {
+renderPrognose();
+renderUebersichtCharts();
+esWrite();
+}, 140);
+}
+if (range) {
+esPaintRange(range);
+range.addEventListener("input", function() { esSetReserve(Number(range.value), "range"); });
+}
+if (num) {
+num.addEventListener("input", function() {
+var v = parseFloat(num.value);
+if (isNaN(v)) return;                       // leeres Feld beim Tippen nicht als 0 werten
+esSetReserve(v, "num");
+});
+num.addEventListener("change", function() {
+var v = parseFloat(num.value);
+if (isNaN(v) || v < 0) v = 0;
+esSetReserve(Math.round(v / 100) * 100, "normalize");
+});
+}
+}
+
 // ===== INIT CALLS + CSV UPLOAD =====
+esLoad();                 // gespeicherte Stammdaten/Reserve VOR dem ersten Rendern anwenden
 renderKennzahlen();
 renderPrognose();
+renderEinstellungen();
 renderUebersichtCharts();
 renderPositions(getFilters());
 setTimeout(function() { renderOposSummary(); }, 300);
