@@ -72,7 +72,7 @@ b.style.color = "#fff";
 });
 // Charts nach dem Sichtbarwerden neu zeichnen - versteckte Container haben Breite 0
 if (typeof pgDrawChart === "function") pgDrawChart();
-if (typeof kzDrawSparklines === "function") kzDrawSparklines();
+if (typeof kzDrawMainChart === "function") kzDrawMainChart();
 });
 });
 
@@ -547,42 +547,6 @@ var color = good ? "#1f9d6b" : "#e0533d";
 var arrow = up ? "▲" : "▼";
 return "<span style='color:" + color + "'>" + arrow + " " + kzNum(delta) + suffix + "</span>";
 }
-function kzSparkline(values, monthLabels, color, width) {
-var w = Math.max(Math.round(width || 220), 120), h = 76, padL = 6, padR = 6, padT = 10, padB = 16;
-var n = values.length;
-if (n === 0) return "";
-var minV = Math.min.apply(null, values), maxV = Math.max.apply(null, values);
-var range = (maxV - minV) || 1;
-var pts = values.map(function(v, i) {
-return {
-x: n === 1 ? w / 2 : padL + ((w - padL - padR) * i / (n - 1)),
-y: padT + (1 - (v - minV) / range) * (h - padT - padB)
-};
-});
-var pathD = "M" + pts.map(function(p) { return p.x.toFixed(1) + "," + p.y.toFixed(1); }).join(" L");
-var areaD = pathD + " L" + pts[pts.length - 1].x.toFixed(1) + "," + (h - padB).toFixed(1) + " L" + pts[0].x.toFixed(1) + "," + (h - padB).toFixed(1) + " Z";
-var gradId = "kzgrad" + color.replace("#", "") + n;
-var circles = pts.map(function(p, i) {
-var last = i === pts.length - 1;
-var monthFull = (kennzahlenData.monthsFull[monthLabels[i]]) || monthLabels[i];
-var valFmt = kzFmt(values[i]);
-var visible = last
-? "<circle cx='" + p.x.toFixed(1) + "' cy='" + p.y.toFixed(1) + "' r='4' fill='" + color + "' style='pointer-events:none'></circle>"
-: "<circle cx='" + p.x.toFixed(1) + "' cy='" + p.y.toFixed(1) + "' r='3' fill='#fff' stroke='" + color + "' stroke-width='2' style='pointer-events:none'></circle>";
-var hit = "<circle class='kz-point' data-month=\"" + monthFull + "\" data-value=\"" + valFmt + "\" cx='" + p.x.toFixed(1) + "' cy='" + p.y.toFixed(1) + "' r='11' fill='transparent' style='cursor:pointer'></circle>";
-return visible + hit;
-}).join("");
-var labels = pts.map(function(p, i) {
-var anchor = i === 0 ? "start" : (i === pts.length - 1 ? "end" : "middle");
-var weight = i === pts.length - 1 ? "700" : "500";
-return "<text x='" + p.x.toFixed(1) + "' y='" + (h - 4) + "' text-anchor='" + anchor + "' font-size='10' fill='#9aa6b2' font-weight='" + weight + "'>" + monthLabels[i] + "</text>";
-}).join("");
-return "<svg width='" + w + "' height='" + h + "' viewBox='0 0 " + w + " " + h + "' style='display:block;overflow:visible'>" +
-"<defs><linearGradient id='" + gradId + "' x1='0' y1='0' x2='0' y2='1'><stop offset='0%' stop-color='" + color + "' stop-opacity='0.18'></stop><stop offset='100%' stop-color='" + color + "' stop-opacity='0'></stop></linearGradient></defs>" +
-"<path d='" + areaD + "' fill='url(#" + gradId + ")'></path>" +
-"<path d='" + pathD + "' fill='none' stroke='" + color + "' stroke-width='2.25' stroke-linejoin='round' stroke-linecap='round'></path>" +
-circles + labels + "</svg>";
-}
 var kzPointTooltip = document.createElement("div");
 kzPointTooltip.id = "kzPointTooltip";
 kzPointTooltip.style.cssText = "position:fixed;display:none;background:#1e2a38;color:#fff;font-size:12px;font-weight:700;padding:5px 9px;border-radius:8px;pointer-events:none;z-index:9999;box-shadow:0 8px 22px rgba(16,30,50,0.24);white-space:nowrap;font-family:Inter,system-ui,sans-serif;font-variant-numeric:tabular-nums;";
@@ -607,19 +571,6 @@ document.addEventListener("mouseout", function(e) {
 var t = e.target.closest ? e.target.closest(".kz-point") : null;
 if (t) kzPointTooltip.style.display = "none";
 });
-function kzTwoBarChart(prevLabel, prevVal, curLabel, curVal, color, lightColor) {
-var maxVal = Math.max(prevVal, curVal, 1);
-var prevH = Math.max(Math.round((prevVal / maxVal) * 100), 4);
-var curH = Math.max(Math.round((curVal / maxVal) * 100), 4);
-function bar(label, val, height, bg) {
-return "<div style='flex:1;display:flex;flex-direction:column;align-items:center;gap:5px;height:100%;justify-content:flex-end'>" +
-"<span style='font-size:11.5px;font-weight:700;font-variant-numeric:tabular-nums;color:#3a4a57;white-space:nowrap'>" + kzFmt(val) + "</span>" +
-"<div style='width:100%;border-radius:6px 6px 0 0;background:" + bg + ";height:" + height + "%'></div>" +
-"<span style='font-size:11px;color:#9aa6b2;font-weight:600'>" + label + "</span></div>";
-}
-return "<div style='display:flex;align-items:flex-end;gap:14px;height:76px;margin-bottom:14px'>" +
-bar(prevLabel, prevVal, prevH, lightColor) + bar(curLabel, curVal, curH, color) + "</div>";
-}
 function kzMetricRow(label, value, trendHTML, tooltip) {
 return "<div style='padding:14px 0;border-top:1px solid #f0f3f6;position:relative'>" +
 "<div class='kz-info-wrap' style='position:absolute;top:14px;right:0'>" +
@@ -630,11 +581,10 @@ return "<div style='padding:14px 0;border-top:1px solid #f0f3f6;position:relativ
 "<div style='font-size:22px;font-weight:700;letter-spacing:-0.02em;margin-top:6px;font-variant-numeric:tabular-nums;color:#1e2a38'>" + value + "</div>" +
 "<div style='font-size:12px;margin-top:5px;font-weight:600'>" + trendHTML + "</div></div>";
 }
-function kzColumn(dotColor, title, subtitle, heroBlockHTML, kpiRowsHTML) {
-return "<div style='background:#fff;border:1px solid #e7ebef;border-radius:14px;padding:20px 22px;box-shadow:0 1px 2px rgba(16,30,50,0.04);display:flex;flex-direction:column;gap:18px'>" +
+function kzColumn(dotColor, title, subtitle, kpiRowsHTML) {
+return "<div style='background:#fff;border:1px solid #e7ebef;border-radius:14px;padding:20px 22px;box-shadow:0 1px 2px rgba(16,30,50,0.04);display:flex;flex-direction:column;gap:14px'>" +
 "<div style='display:flex;align-items:center;gap:9px'><span style='width:11px;height:11px;border-radius:50%;background:" + dotColor + ";flex:none'></span><span style='font-size:17px;font-weight:700;letter-spacing:-0.01em;color:#1e2a38'>" + title + "</span></div>" +
-"<div style='font-size:12px;color:#1e2a38;font-weight:500;margin-top:-12px'>" + subtitle + "</div>" +
-"<div style='background:#f8fafb;border:1px solid #eef1f4;border-radius:12px;padding:16px 18px'>" + heroBlockHTML + "</div>" +
+"<div style='font-size:12px;color:#8a96a3;font-weight:500;margin-top:-10px'>" + subtitle + "</div>" +
 "<div style='display:flex;flex-direction:column'>" + kpiRowsHTML + "</div>" +
 "</div>";
 }
@@ -672,17 +622,6 @@ var i0 = n - len, i1 = n - 1;
 var crossesYear = !!(d.years && d.years[i0] !== d.years[i1]);
 return "Summe · " + kzMonthLabel(i0, crossesYear) + " – " + kzMonthLabel(i1, true);
 }
-function kzBigTrendHTML(cur, prev, invert) {
-var len = kzWindowLen();
-var noPrev = prev === null || prev === undefined || isNaN(prev) || prev === 0;
-if (noPrev) {
-if (len > 1) return "<span style='color:#8a96a3'>Ø " + kzFmt(cur / len) + " pro Monat</span>";
-return "<span style='color:#8a96a3'>Keine Vorperiode</span>";
-}
-var delta = ((cur - prev) / Math.abs(prev)) * 100;
-var refText = len === 1 ? " vs. Vormonat" : " vs. vorherige " + len + " Monate";
-return kzTrend(delta, " %", invert) + refText;
-}
 function kzSubTrendHTML(cur, prev, mode, suffix, invert) {
 var len = kzWindowLen();
 if (prev === null || prev === undefined || isNaN(prev)) {
@@ -694,38 +633,128 @@ return kzTrend(cur - prev, suffix || "", invert);
 var pct = prev ? ((cur - prev) / Math.abs(prev)) * 100 : 0;
 return kzTrend(pct, " %", invert);
 }
-function kzDrawSparklines() {
-var nodes = document.querySelectorAll(".kz-spark");
-for (var i = 0; i < nodes.length; i++) {
-var node = nodes[i];
-var w = Math.round(node.getBoundingClientRect().width);
-if (!w) continue;
-if (node.getAttribute("data-w") === String(w)) continue;
-node.setAttribute("data-w", String(w));
-node.innerHTML = kzSparkline(
-JSON.parse(node.getAttribute("data-values")),
-JSON.parse(node.getAttribute("data-labels")),
-node.getAttribute("data-color"),
-w
-);
+// Zeitraum des Charts: im Monats-Tab Vormonat + aktueller Monat als Vergleich
+function kzChartLen() {
+var n = kennzahlenData.months.length;
+if (kennzahlenPeriod === "month") return Math.min(2, n);
+return kzWindowLen();
 }
+// Hauptchart der Kennzahlen - gleiche Bildsprache wie die Prognose, nur rueckwaerts gerichtet.
+// Wird erst nach dem Rendern gezeichnet, damit die echte Containerbreite bekannt ist.
+function kzDrawMainChart() {
+var node = document.getElementById("kzChart");
+if (!node) return;
+var w = Math.round(node.getBoundingClientRect().width);
+if (!w) return;
+var d = kennzahlenData, n = d.months.length, len = kzChartLen();
+if (!n || !len) { node.innerHTML = ""; return; }
+var pts = [];
+for (var i = n - len; i < n; i++) {
+pts.push({
+key: d.months[i],
+full: kzMonthLabel(i, true),
+inc: d.einnahmen[i],
+exp: d.ausgaben[i],
+gew: d.gewinn[i],
+isNow: i === n - 1
+});
+}
+var m = pts.length;
+var incColor = "#1f9d6b", expColor = "#e0533d", lineColor = "#4f5bd5", avgColor = "#e07b00";
+var h = 300, padL = 70, padR = 16, padT = 18, padB = 30;
+var innerW = w - padL - padR, innerH = h - padT - padB;
+if (innerW < 40) { padL = 44; innerW = w - padL - padR; }
+if (innerW < 20) return;
+// Gemeinsame Skala fuer Balken und Linie - die Nulllinie gehoert dazu,
+// damit ein Verlustmonat sichtbar unter Null faellt
+var avgGew = pts.reduce(function(a, p) { return a + p.gew; }, 0) / m;
+var maxV = 0, minV = 0;
+pts.forEach(function(p) {
+maxV = Math.max(maxV, p.inc, p.exp, p.gew);
+minV = Math.min(minV, p.gew);
+});
+maxV = Math.max(maxV, avgGew) * 1.08;
+minV = Math.min(minV, avgGew);
+var step = pgNiceStep((maxV - minV) / 5);
+minV = Math.floor(minV / step) * step;
+maxV = Math.ceil(maxV / step) * step;
+var range = (maxV - minV) || 1;
+var tickCount = Math.round((maxV - minV) / step);
+function X(i) { return padL + innerW * (i + 0.5) / m; }
+function Y(v) { return padT + (1 - (v - minV) / range) * innerH; }
+// Raster + Beschriftung der Y-Achse
+var grid = "", axis = "";
+for (var t = 0; t <= tickCount; t++) {
+var tv = minV + t * step;
+var gy = Y(tv);
+grid += "<line x1='" + padL + "' y1='" + gy.toFixed(1) + "' x2='" + (w - padR) + "' y2='" + gy.toFixed(1) +
+"' stroke='" + (Math.abs(tv) < 0.5 ? "#dbe2ea" : "#f0f3f6") + "' stroke-width='1'></line>";
+axis += "<text x='" + (padL - 10) + "' y='" + (gy + 4).toFixed(1) + "' text-anchor='end' font-size='11' font-weight='500' fill='#9aa6b2'>" + pgAxisFmt(tv) + "</text>";
+}
+// Balken: Einnahmen und Ausgaben je Monat
+var band = innerW / m;
+var barW = Math.max(6, Math.min(28, band * 0.34));
+var barGap = 2;
+var y0 = Y(0);
+var bars = pts.map(function(p, i) {
+var cx = X(i);
+function bar(val, color, bx, name) {
+var yv = Y(val), bh = Math.max(1, y0 - yv);
+return "<rect class='kz-point' data-month=\"" + name + " \u00b7 " + p.full + "\" data-value=\"" + kzFmt(val) + "\"" +
+" x='" + bx.toFixed(1) + "' y='" + yv.toFixed(1) + "' width='" + barW.toFixed(1) + "' height='" + bh.toFixed(1) +
+"' rx='2.5' fill='" + color + "' style='cursor:pointer'></rect>";
+}
+return bar(p.inc, incColor, cx - barW - barGap, "Einnahmen") +
+bar(p.exp, expColor, cx + barGap, "Ausgaben");
+}).join("");
+// Gewinnlinie ueber den Balken
+var coords = pts.map(function(p, i) { return { x: X(i), y: Y(p.gew) }; });
+var pathD = "M" + coords.map(function(c) { return c.x.toFixed(1) + "," + c.y.toFixed(1); }).join(" L");
+var areaD = pathD + " L" + coords[m - 1].x.toFixed(1) + "," + y0.toFixed(1) +
+" L" + coords[0].x.toFixed(1) + "," + y0.toFixed(1) + " Z";
+var circles = pts.map(function(p, i) {
+var c = coords[i];
+var dot = p.gew < 0
+? "<circle cx='" + c.x.toFixed(1) + "' cy='" + c.y.toFixed(1) + "' r='5.5' fill='#fff' stroke='#c62828' stroke-width='2.5' style='pointer-events:none'></circle>"
+: (p.isNow
+? "<circle cx='" + c.x.toFixed(1) + "' cy='" + c.y.toFixed(1) + "' r='4.5' fill='" + lineColor + "' style='pointer-events:none'></circle>"
+: "<circle cx='" + c.x.toFixed(1) + "' cy='" + c.y.toFixed(1) + "' r='3.5' fill='#fff' stroke='" + lineColor + "' stroke-width='2' style='pointer-events:none'></circle>");
+var hit = "<circle class='kz-point' data-month=\"Gewinn \u00b7 " + p.full + "\" data-value=\"" + kzFmt(p.gew) +
+"\" cx='" + c.x.toFixed(1) + "' cy='" + c.y.toFixed(1) + "' r='12' fill='transparent' style='cursor:pointer'></circle>";
+return dot + hit;
+}).join("");
+var labels = pts.map(function(p, i) {
+var txt = p.key + (p.isNow ? " \u00b7 jetzt" : "");
+return "<text x='" + X(i).toFixed(1) + "' y='" + (h - 9) + "' text-anchor='middle' font-size='11.5' font-weight='" +
+(p.isNow ? "700" : "600") + "' fill='" + (p.isNow ? "#1e2a38" : "#8a96a3") + "' style='pointer-events:none'>" + txt + "</text>";
+}).join("");
+// Referenzlinie: durchschnittlicher Gewinn im gewaehlten Zeitraum
+var ya = Y(avgGew);
+var avgLine = "<line x1='" + padL + "' y1='" + ya.toFixed(1) + "' x2='" + (w - padR) + "' y2='" + ya.toFixed(1) +
+"' stroke='" + avgColor + "' stroke-width='1.25' stroke-dasharray='5 5' opacity='0.85' style='pointer-events:none'></line>";
+var legend =
+"<div style='display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:18px;margin-bottom:6px'>" +
+pgLegendItem(incColor, "Einnahmen", "box") +
+pgLegendItem(expColor, "Ausgaben", "box") +
+pgLegendItem(lineColor, "Gewinn", "line") +
+pgLegendItem(avgColor, "\u00d8 Gewinn " + kzFmt(avgGew), "dash") +
+"</div>";
+node.innerHTML = legend +
+"<svg width='" + w + "' height='" + h + "' viewBox='0 0 " + w + " " + h + "' style='display:block;overflow:visible'>" +
+"<defs><linearGradient id='kzgrad' x1='0' y1='0' x2='0' y2='1'>" +
+"<stop offset='0%' stop-color='" + lineColor + "' stop-opacity='0.16'></stop>" +
+"<stop offset='100%' stop-color='" + lineColor + "' stop-opacity='0'></stop></linearGradient></defs>" +
+grid + axis + bars +
+"<path d='" + areaD + "' fill='url(#kzgrad)' style='pointer-events:none'></path>" +
+avgLine +
+"<path d='" + pathD + "' fill='none' stroke='" + lineColor + "' stroke-width='2.5' stroke-linejoin='round' stroke-linecap='round' style='pointer-events:none'></path>" +
+circles + labels + "</svg>";
 }
 var kzResizeTimer = null;
 window.addEventListener("resize", function() {
 clearTimeout(kzResizeTimer);
-kzResizeTimer = setTimeout(kzDrawSparklines, 120);
+kzResizeTimer = setTimeout(kzDrawMainChart, 120);
 });
-function kzChartHTML(arr, color, lightColor) {
-var m = kennzahlenData.months, n = m.length, len = kzWindowLen();
-if (!n) return "";
-if (kennzahlenPeriod === "month") {
-if (n < 2) return "";
-return kzTwoBarChart(m[n - 2], arr[n - 2], m[n - 1], arr[n - 1], color, lightColor);
-}
-var values = arr.slice(n - len);
-var labels = m.slice(n - len);
-return "<div class='kz-spark' data-values='" + JSON.stringify(values) + "' data-labels='" + JSON.stringify(labels) + "' data-color='" + color + "' style='height:76px;margin-bottom:14px'></div>";
-}
 function renderKennzahlen() {
 var container = document.getElementById("kennzahlenContainer");
 if (!container) return;
@@ -736,17 +765,12 @@ var len3 = Math.min(3, nMonths), len6 = Math.min(6, nMonths);
 if (kennzahlenPeriod === "3m" && len3 < 2) kennzahlenPeriod = "month";
 if (kennzahlenPeriod === "6m" && len6 <= len3) kennzahlenPeriod = len3 > 1 ? "3m" : "month";
 var winLen = kzWindowLen();
-var subtitleSuffix = winLen <= 1 ? "aktueller Monat" : "letzte " + winLen + " Monate";
 var labelSuffix = winLen <= 1 ? " (Monat)" : " (" + winLen + " Monate)";
 var einV = kzPeriodValue(d.einnahmen, "sum");
 var ztkV = kzPeriodValue(d.zahlungszielKunden, "avg");
 var sonstV = kzPeriodValue(d.sonstigeErtraege, "sum");
 var einnahmenHTML = kzColumn(
-"#1f9d6b", "Einnahmen", "Einnahmen · " + subtitleSuffix,
-kzChartHTML(d.einnahmen, "#1f9d6b", "#bfe3d3") +
-"<div style='font-size:12.5px;font-weight:600;color:#8a96a3'>" + kzPeriodLabel() + "</div>" +
-"<div style='font-size:34px;font-weight:700;letter-spacing:-0.02em;margin-top:5px;font-variant-numeric:tabular-nums;color:#1e2a38'>" + kzFmt(einV.cur) + "</div>" +
-"<div style='font-size:13px;margin-top:6px;font-weight:600'>" + kzBigTrendHTML(einV.cur, einV.prev) + "</div>",
+"#1f9d6b", "Einnahmen", kzPeriodLabel(),
 kzMetricRow("Umsatz" + labelSuffix, kzFmt(einV.cur), kzSubTrendHTML(einV.cur, einV.prev, "pct"),
 "Summe aller im laufenden Monat gestellten Rechnungen (netto). Berechnung: Σ Rechnungsbeträge mit Rechnungsdatum im " + d.monthsFull[d.months[d.months.length - 1]] + ".") +
 kzMetricRow("Ø Zahlungsziel Kunden", Math.round(ztkV.cur) + " Tage", kzSubTrendHTML(ztkV.cur, ztkV.prev, "abs", " Tage", true),
@@ -760,11 +784,9 @@ var matV = kzPeriodValue(d.materialeinsatz, "sum");
 var perV = kzPeriodValue(d.personalkosten, "sum");
 var sonAusV = kzPeriodValue(d.sonstigeAusgaben, "sum");
 var ausgabenHTML = kzColumn(
-"#e0533d", "Ausgaben", "Ausgaben · " + subtitleSuffix,
-kzChartHTML(d.ausgaben, "#e0533d", "#f3cfc6") +
-"<div style='font-size:12.5px;font-weight:600;color:#8a96a3'>" + kzPeriodLabel() + "</div>" +
-"<div style='font-size:34px;font-weight:700;letter-spacing:-0.02em;margin-top:5px;font-variant-numeric:tabular-nums;color:#1e2a38'>" + kzFmt(ausV.cur) + "</div>" +
-"<div style='font-size:13px;margin-top:6px;font-weight:600'>" + kzBigTrendHTML(ausV.cur, ausV.prev, true) + "</div>",
+"#e0533d", "Ausgaben", kzPeriodLabel(),
+kzMetricRow("Ausgaben" + labelSuffix, kzFmt(ausV.cur), kzSubTrendHTML(ausV.cur, ausV.prev, "pct", null, true),
+"Alle betrieblichen Ausgaben im Zeitraum. Berechnung: Materialeinsatz + Personalkosten + sonstige Ausgaben.") +
 kzMetricRow("Ø Zahlungsziel Lieferanten", Math.round(ztlV.cur) + " Tage", kzSubTrendHTML(ztlV.cur, ztlV.prev, "abs", " Tage"),
 "Wie lange wir uns im Schnitt Zeit lassen, Lieferantenrechnungen zu zahlen. Ein längeres Ziel schont die Liquidität – PAUL plant Verbindlichkeiten entsprechend später ein.") +
 kzMetricRow("Materialeinsatz", kzFmt(matV.cur), kzSubTrendHTML(matV.cur, matV.prev, "pct", null, true),
@@ -781,11 +803,7 @@ var periodMonths = winLen || 1;
 var liqCur = ausV.cur ? accountsTotal / (ausV.cur / periodMonths) : 0;
 var liqPrev = ausV.prev ? accountsTotal / (ausV.prev / periodMonths) : null;
 var gewinnHTML = kzColumn(
-"#4f5bd5", "Gewinn", "Gewinn · " + subtitleSuffix,
-kzChartHTML(d.gewinn, "#4f5bd5", "#c9d0f5") +
-"<div style='font-size:12.5px;font-weight:600;color:#8a96a3'>" + kzPeriodLabel() + "</div>" +
-"<div style='font-size:34px;font-weight:700;letter-spacing:-0.02em;margin-top:5px;font-variant-numeric:tabular-nums;color:#1e2a38'>" + kzFmt(gewV.cur) + "</div>" +
-"<div style='font-size:13px;margin-top:6px;font-weight:600'>" + kzBigTrendHTML(gewV.cur, gewV.prev) + "</div>",
+"#4f5bd5", "Gewinn", kzPeriodLabel(),
 kzMetricRow("Gewinn" + labelSuffix, kzFmt(gewV.cur), kzSubTrendHTML(gewV.cur, gewV.prev, "pct"),
 "Was nach Abzug aller Kosten vom Umsatz übrig bleibt. Berechnung: Umsatz − Materialeinsatz − Personalkosten − sonstige Ausgaben.") +
 kzMetricRow("Gewinnmarge", Math.round(margeCur) + " %", kzSubTrendHTML(margeCur, margePrev, "abs", " Pkt"),
@@ -808,6 +826,8 @@ container.innerHTML =
 "<h1 style='margin:0;font-size:25px;font-weight:700;letter-spacing:-0.02em;color:#1e2a38'>Kennzahlen <span style='font-size:15px;font-weight:500;color:#9aa6b2'>· " + kzMonthLabel(nMonths - 1, true) + "</span></h1>" +
 "<div style='display:flex;gap:4px;background:#eef1f4;padding:4px;border-radius:9px'>" + tabsHTML + "</div>" +
 "</div>" +
+"<div style='background:#fff;border:1px solid #e7ebef;border-radius:14px;padding:18px 20px 12px;box-shadow:0 1px 2px rgba(16,30,50,0.04);margin-bottom:18px'>" +
+"<div id='kzChart'></div></div>" +
 "<div style='display:grid;grid-template-columns:repeat(3,1fr);gap:18px;align-items:start'>" + einnahmenHTML + ausgabenHTML + gewinnHTML + "</div>" +
 "</div>";
 container.querySelectorAll("[data-kz-period]").forEach(function(btn) {
@@ -816,7 +836,7 @@ kennzahlenPeriod = btn.getAttribute("data-kz-period");
 renderKennzahlen();
 });
 });
-kzDrawSparklines();
+kzDrawMainChart();
 }
 function renderUmsatzCard() {
 var valueEl = document.getElementById("kpiBurnRateValue");
