@@ -195,6 +195,199 @@ const bg = isOverdue ? "#fdecea" : "#eef2f6";
 const color = isOverdue ? "#c0432f" : "#5b6776";
 return "<span style='font-size:10.5px;font-weight:600;padding:2px 8px;border-radius:20px;background:" + bg + ";color:" + color + ";white-space:nowrap;flex:none'>" + label + "</span>";
 }
+// ===== MAHNUNG - Textvorlage je Mahnstufe, zum Kopieren =====
+// PLACEHOLDER: Absender kommt aus unternehmenData (Einstellungen).
+// Rechnungsdatum, Bankverbindung und Ansprechpartner liegen noch nicht in den
+// Positionsdaten - sobald die API sie liefert, hier ergaenzen. Bis dahin stehen
+// eckige Klammern [ ] im Text, damit der Nutzer sofort sieht, was er ergaenzen muss.
+var mahnStufen = [
+{ label: "Zahlungserinnerung", frist: 10 },
+{ label: "1. Mahnung",         frist: 7  },
+{ label: "2. Mahnung",         frist: 7  },
+{ label: "Letzte Mahnung",     frist: 5  }
+];
+function mahnDaysOverdue(dueDate) {
+var today = new Date(); today.setHours(0,0,0,0);
+var due = new Date(dueDate);
+return -Math.ceil((due - today) / (1000 * 60 * 60 * 24));
+}
+function mahnDefaultStufe(dueDate) {
+var d = mahnDaysOverdue(dueDate);
+if (d <= 7)  return 0;
+if (d <= 21) return 1;
+if (d <= 45) return 2;
+return 3;
+}
+function mahnFmtDate(d) {
+return d.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "numeric" });
+}
+function mahnFristDate(days) {
+var d = new Date(); d.setHours(0,0,0,0);
+d.setDate(d.getDate() + days);
+return mahnFmtDate(d);
+}
+function mahnBetrag(v) {
+return v.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " €";
+}
+function mahnText(p, stufeIdx) {
+var st      = mahnStufen[stufeIdx] || mahnStufen[0];
+var tage    = mahnDaysOverdue(p.dueDate);
+var faellig = mahnFmtDate(new Date(p.dueDate));
+var frist   = mahnFristDate(st.frist);
+var betrag  = mahnBetrag(p.amount);
+var firma   = (typeof unternehmenData === "object" && unternehmenData.firma) ? unternehmenData.firma : "[Dein Firmenname]";
+var tageTxt = tage > 0 ? "seit " + tage + " " + (tage === 1 ? "Tag" : "Tagen") + " " : "";
+
+var kopf = "Betreff: " + st.label + " zu Rechnung " + p.number + "\n\n" +
+p.name + "\n\n" +
+"Sehr geehrte Damen und Herren,\n\n";
+
+var fuss = "\nSollten Sie die Zahlung zwischenzeitlich veranlasst haben, betrachten Sie dieses Schreiben bitte als gegenstandslos.\n\n" +
+"Mit freundlichen Grüßen\n" +
+firma + "\n" +
+"[Ansprechpartner · Telefon · Bankverbindung]";
+
+var kern;
+if (stufeIdx === 0) {
+kern =
+"sicher ist es Ihrer Aufmerksamkeit entgangen, dass unsere Rechnung " + p.number + " über " + betrag +
+" am " + faellig + " zur Zahlung fällig war. Eine Zahlung ist bei uns bisher nicht eingegangen.\n\n" +
+"Wir bitten Sie, den offenen Betrag bis zum " + frist + " auf das in der Rechnung genannte Konto zu überweisen.\n";
+} else if (stufeIdx === 1) {
+kern =
+"unsere Rechnung " + p.number + " über " + betrag + " ist " + tageTxt + "überfällig. Fällig war der Betrag am " +
+faellig + ". Eine Zahlung ist bei uns bisher nicht eingegangen.\n\n" +
+"Bitte gleichen Sie den offenen Betrag bis zum " + frist + " aus.\n";
+} else if (stufeIdx === 2) {
+kern =
+"trotz Zahlungserinnerung und Mahnung ist unsere Rechnung " + p.number + " über " + betrag + " weiterhin offen. " +
+"Der Betrag war am " + faellig + " fällig und ist damit " + tageTxt + "überfällig.\n\n" +
+"Wir fordern Sie auf, den offenen Betrag bis spätestens " + frist + " zu begleichen. " +
+"Für den weiteren Verzug behalten wir uns vor, Verzugszinsen und Mahnkosten geltend zu machen.\n";
+} else {
+kern =
+"unsere Rechnung " + p.number + " über " + betrag + " ist trotz mehrfacher Mahnung bis heute nicht ausgeglichen. " +
+"Fällig war der Betrag am " + faellig + " – er ist damit " + tageTxt + "überfällig.\n\n" +
+"Wir setzen Ihnen eine letzte Frist bis zum " + frist + ". Geht bis dahin kein Zahlungseingang bei uns ein, " +
+"geben wir die Forderung ohne weitere Ankündigung zur gerichtlichen Geltendmachung bzw. an ein Inkassounternehmen ab. " +
+"Die dadurch entstehenden Kosten gehen zu Ihren Lasten.\n";
+}
+return kopf + kern + fuss;
+}
+// Der Button erscheint nur bei Forderungen, die heute faellig oder ueberfaellig sind.
+// (Eine Zeile weiter unten aendern, falls er auf allen Forderungszeilen stehen soll.)
+function mahnEligible(p) {
+return p.type === "receivable" && mahnDaysOverdue(p.dueDate) >= 0;
+}
+function mahnButtonHTML(p) {
+if (!mahnEligible(p)) return "";
+return "<button data-index='" + p.originalIndex + "' class='mahn-btn' style='padding:4px 10px;border-radius:7px;border:1px solid #ecd2cb;background:#fff;color:#c0432f;font-size:11px;font-weight:600;font-family:inherit;cursor:pointer;white-space:nowrap;flex:none'>Mahnung</button>";
+}
+var mahnCurrentIndex = null, mahnCurrentStufe = 0, mahnCopyTimer = null;
+function mahnEnsureModal() {
+var m = document.getElementById("mahnModal");
+if (m) return m;
+m = document.createElement("div");
+m.id = "mahnModal";
+m.style.cssText = "display:none;position:fixed;inset:0;z-index:9999;background:rgba(16,30,50,0.45);align-items:center;justify-content:center;padding:24px;font-family:inherit";
+m.innerHTML =
+"<div id='mahnCard' style='background:#fff;border-radius:16px;width:100%;max-width:580px;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 18px 60px rgba(16,30,50,0.28);overflow:hidden'>" +
+"<div style='display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:18px 20px 14px;border-bottom:1px solid #f0f3f6'>" +
+"<div><div style='font-size:16px;font-weight:700;color:#1e2a38'>Mahnung erstellen</div>" +
+"<div id='mahnSub' style='font-size:12.5px;color:#9aa6b2;margin-top:2px'></div></div>" +
+"<button id='mahnClose' style='width:26px;height:26px;border-radius:7px;border:none;background:transparent;color:#b3bdc7;font-size:17px;font-family:inherit;cursor:pointer;flex:none;padding:0;line-height:1'>✕</button>" +
+"</div>" +
+"<div style='padding:14px 20px 0'>" +
+"<div style='font-size:11.5px;font-weight:600;color:#8a96a3;margin-bottom:7px'>Mahnstufe</div>" +
+"<div id='mahnStufenBar' style='display:flex;gap:4px;background:#eef1f4;padding:4px;border-radius:9px;flex-wrap:wrap'></div>" +
+"</div>" +
+"<div style='padding:14px 20px;overflow:auto;flex:1'>" +
+"<textarea id='mahnTextarea' spellcheck='false' style='width:100%;min-height:300px;padding:14px;border-radius:10px;border:1px solid #d6dde4;background:#f8fafb;font-size:13px;line-height:1.55;font-family:inherit;color:#1e2a38;outline:none;resize:vertical;box-sizing:border-box'></textarea>" +
+"<div style='font-size:11.5px;color:#9aa6b2;margin-top:8px'>Text lässt sich vor dem Kopieren direkt hier anpassen. Platzhalter in [ ] bitte ergänzen.</div>" +
+"</div>" +
+"<div style='display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:14px 20px;border-top:1px solid #f0f3f6;background:#fbfcfd'>" +
+"<button id='mahnCancel' style='padding:9px 15px;border-radius:9px;border:1px solid #d6dde4;background:#fff;color:#46535f;font-size:13px;font-weight:600;font-family:inherit;cursor:pointer'>Schließen</button>" +
+"<button id='mahnCopy' style='padding:9px 16px;border-radius:9px;border:none;background:#1f9d6b;color:#fff;font-size:13px;font-weight:600;font-family:inherit;cursor:pointer'>Text kopieren</button>" +
+"</div>" +
+"</div>";
+document.body.appendChild(m);
+
+m.addEventListener("click", function(e) { if (e.target === m) mahnClose(); });
+document.getElementById("mahnClose").addEventListener("click", mahnClose);
+document.getElementById("mahnCancel").addEventListener("click", mahnClose);
+document.getElementById("mahnCopy").addEventListener("click", mahnCopy);
+document.getElementById("mahnStufenBar").addEventListener("click", function(e) {
+var b = e.target.closest ? e.target.closest("button[data-stufe]") : null;
+if (!b) return;
+mahnCurrentStufe = Number(b.getAttribute("data-stufe"));
+mahnRender();
+});
+document.addEventListener("keydown", function(e) {
+if (e.key === "Escape") {
+var el = document.getElementById("mahnModal");
+if (el && el.style.display === "flex") mahnClose();
+}
+});
+return m;
+}
+function mahnRender() {
+var p = positions[mahnCurrentIndex];
+if (!p) return;
+var tage = mahnDaysOverdue(p.dueDate);
+var sub = p.name + " · " + p.number + " · " + mahnBetrag(p.amount) +
+(tage > 0 ? " · " + tage + " " + (tage === 1 ? "Tag" : "Tage") + " überfällig" : " · heute fällig");
+document.getElementById("mahnSub").textContent = sub;
+document.getElementById("mahnStufenBar").innerHTML = mahnStufen.map(function(s, i) {
+var on = i === mahnCurrentStufe;
+return "<button data-stufe='" + i + "' style='padding:6px 11px;border-radius:7px;border:none;font-size:12px;font-weight:600;font-family:inherit;cursor:pointer;background:" +
+(on ? "#1e2a38" : "transparent") + ";color:" + (on ? "#fff" : "#5b6776") + "'>" + s.label + "</button>";
+}).join("");
+document.getElementById("mahnTextarea").value = mahnText(p, mahnCurrentStufe);
+var copyBtn = document.getElementById("mahnCopy");
+if (copyBtn) { copyBtn.textContent = "Text kopieren"; copyBtn.style.background = "#1f9d6b"; }
+}
+function mahnOpen(index) {
+var p = positions[index];
+if (!p) return;
+mahnEnsureModal();
+mahnCurrentIndex = index;
+mahnCurrentStufe = mahnDefaultStufe(p.dueDate);
+mahnRender();
+document.getElementById("mahnModal").style.display = "flex";
+}
+function mahnClose() {
+var m = document.getElementById("mahnModal");
+if (m) m.style.display = "none";
+if (mahnCopyTimer) { clearTimeout(mahnCopyTimer); mahnCopyTimer = null; }
+}
+function mahnCopy() {
+var ta = document.getElementById("mahnTextarea");
+var btn = document.getElementById("mahnCopy");
+if (!ta || !btn) return;
+function done(ok) {
+btn.textContent = ok ? "Kopiert ✓" : "Bitte manuell kopieren";
+btn.style.background = ok ? "#1f9d6b" : "#e0a72e";
+if (mahnCopyTimer) clearTimeout(mahnCopyTimer);
+mahnCopyTimer = setTimeout(function() {
+btn.textContent = "Text kopieren";
+btn.style.background = "#1f9d6b";
+}, 1800);
+}
+// navigator.clipboard braucht https - im Zweifel auf execCommand zurueckfallen.
+if (navigator.clipboard && navigator.clipboard.writeText) {
+navigator.clipboard.writeText(ta.value).then(function() { done(true); }, function() { mahnCopyFallback(ta, done); });
+} else {
+mahnCopyFallback(ta, done);
+}
+}
+function mahnCopyFallback(ta, done) {
+try {
+ta.focus();
+ta.select();
+var ok = document.execCommand("copy");
+done(!!ok);
+} catch (e) { done(false); }
+}
 function getFilters() {
 var activePill = document.querySelector("#oposFilterPills .opos-pill-active");
 return {
@@ -325,6 +518,10 @@ var payItems = filtered.filter(function(p) { return p.type === "payable"; });
 function rowHTML(p, isLast) {
 var pill = getDayPill(p.dueDate);
 var border = isLast ? "" : "border-bottom:1px solid #f0f3f6;";
+// Feste Slot-Breite, damit Betrag und ✕ auch in Zeilen ohne Mahn-Button buendig bleiben.
+var mahnSlot = p.type === "receivable"
+? "<span style='width:80px;flex:none;display:flex;justify-content:flex-end'>" + mahnButtonHTML(p) + "</span>"
+: "";
 return "<div data-index='" + p.originalIndex + "' style='display:flex;align-items:center;gap:10px;padding:11px 16px;" + border + "'>" +
 "<div style='flex:1;min-width:0'>" +
 "<div style='font-size:13px;font-weight:600;color:#1e2a38'>" + p.name + "</div>" +
@@ -332,6 +529,7 @@ return "<div data-index='" + p.originalIndex + "' style='display:flex;align-item
 "</div>" +
 pill +
 "<span style='font-size:13px;font-weight:700;font-variant-numeric:tabular-nums;color:#1e2a38;min-width:68px;text-align:right'>" + p.amount.toLocaleString("de-DE") + " €</span>" +
+mahnSlot +
 "<button data-index='" + p.originalIndex + "' class='delete-btn' style='width:22px;height:22px;border-radius:6px;border:none;background:transparent;color:#b3bdc7;font-size:15px;font-family:inherit;cursor:pointer;flex:none;padding:0;'>✕</button>" +
 "</div>";
 }
@@ -450,6 +648,11 @@ if (modal) modal.style.display = "none";
 var el = document.getElementById(containerId);
 if (el) {
 el.addEventListener("click", function(e) {
+var mBtn = e.target.closest ? e.target.closest(".mahn-btn") : null;
+if (mBtn) {
+mahnOpen(Number(mBtn.getAttribute("data-index")));
+return;
+}
 if (e.target.classList.contains("delete-btn")) {
 positions.splice(Number(e.target.getAttribute("data-index")), 1);
 renderPositions(getFilters());
